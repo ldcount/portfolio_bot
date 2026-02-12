@@ -1,0 +1,24 @@
+[Unit]
+Description=Telegram Bot Service
+After=network.target
+
+[Service]
+# user running the bot (e.g., root, ubuntu, etc.)
+User=root
+# Group=root
+
+# Directory where your code is located
+WorkingDirectory=/opt/bots/portfolio_bot
+
+# path to python in env AND path to main.py
+ExecStart=/opt/bots/portfolio_bot/venv/bin/python3 -m app.main
+
+# Restart automatically if it crashes
+Restart=always
+RestartSec=10
+
+# Environment variables (optional, better to use .env file)
+# EnvironmentFile=/opt/bots/portfolio_bot/.env
+
+[Install]
+WantedBy=multi-user.target
