@@ -160,7 +160,7 @@ class Aggregator:
             lines.append(ibkr_line)
             lines.append("")
         
-        lines.append(f"TOTAL")
+        lines.append(f"<b>TOTAL</b>")
         lines.append(f"USD: <code>{fmt(grand_total_usd, 'USD')}</code>")
         lines.append(f"RUB: <code>{fmt(grand_total_rub, 'RUB')}</code>")
 
