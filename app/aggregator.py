@@ -159,8 +159,9 @@ class Aggregator:
                 ibkr_line += f" (ERROR: {summary['errors']['ibkr']})"
             lines.append(ibkr_line)
             lines.append("")
-
-        lines.append(f"TOTAL (USD): <code>{fmt(grand_total_usd, 'USD')}</code>")
-        lines.append(f"TOTAL (RUB): <code>{fmt(grand_total_rub, 'RUB')}</code>")
+        
+        lines.append(f"TOTAL")
+        lines.append(f"USD: <code>{fmt(grand_total_usd, 'USD')}</code>")
+        lines.append(f"RUB: <code>{fmt(grand_total_rub, 'RUB')}</code>")
 
         return "\n".join(lines)
