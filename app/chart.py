@@ -46,9 +46,9 @@ def build_portfolio_chart(entries: list[dict]) -> io.BytesIO:
     # Entries arrive newest-first — reverse for chronological order on the x-axis
     chronological = list(reversed(entries))
 
-    # Sample every 3rd point (keep first and last to anchor the chart properly)
+    # Sample every nth point (keep first and last to anchor the chart properly)
     if len(chronological) > 3:
-        sampled = chronological[::2]
+        sampled = chronological[::1]
         # Always include the most recent point
         if chronological[-1] not in sampled:
             sampled.append(chronological[-1])

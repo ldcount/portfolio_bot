@@ -169,7 +169,7 @@ class TelegramBot:
             buf = chart_module.build_portfolio_chart(entries)
             await update.message.reply_photo(
                 photo=buf,
-                caption="📈 Portfolio USD trend (every 3rd data point)",
+                caption="📈 Portfolio USD trend",
             )
         except RuntimeError as e:
             # matplotlib not installed — skip chart silently
