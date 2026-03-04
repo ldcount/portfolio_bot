@@ -53,16 +53,18 @@ class TBankClient:
             logger.error(f"Error fetching FX rate: {e}")
             return 90.0
 
-    def get_portfolio_summary(self) -> Dict[str, float]:
+    def get_portfolio_summary(self) -> Dict:
         """
         Returns a dictionary with:
         - total_rub: Total portfolio value in RUB
         - total_usd: Total portfolio value in USD (converted)
+        - accounts: List of per-account dicts [{"name": str, "rub": float}, ...]
         """
         if not self.token:
-            return {"total_rub": 0.0, "total_usd": 0.0}
+            return {"total_rub": 0.0, "total_usd": 0.0, "accounts": []}
 
         total_rub = 0.0
+        accounts_list = []
 
         try:
             with Client(self.token) as client:
@@ -84,32 +86,40 @@ class TBankClient:
                         account_id=account.id
                     )
 
-                    # Portfolio usually has 'total_amount_portfolio' or similar, but let's check positions
-                    # 'total_amount_portfolio' is MoneyValue
+                    account_rub = 0.0
                     if hasattr(portfolio, "total_amount_portfolio"):
                         val = portfolio.total_amount_portfolio
                         amount = val.units + val.nano / 1e9
                         currency = val.currency.upper()
 
                         if currency == "RUB":
-                            total_rub += float(amount)
+                            account_rub = float(amount)
                         elif currency == "USD":
-                            total_rub += float(amount) * usd_rub_rate
-                        # Add other currencies if needed via cross rates, but for now strict RUB/USD
-                        else:
-                            # Fallback: ignore or approximate
-                            pass
-                    else:
-                        # Sum positions manually if total is not available (unlikely)
-                        pass
+                            account_rub = float(amount) * usd_rub_rate
+
+                    # Use account name if available, fallback to generic label
+                    account_name = (
+                        getattr(account, "name", None)
+                        or f"Account {len(accounts_list) + 1}"
+                    )
+                    # Only show accounts with meaningful balances (>= 1000 RUB)
+                    if account_rub >= 1000:
+                        accounts_list.append(
+                            {"name": account_name, "rub": round(account_rub, 2)}
+                        )
+                    total_rub += account_rub
 
         except RequestError as e:
             logger.error(f"T-Bank API Request Error: {e}")
-            return {"total_rub": 0.0, "total_usd": 0.0, "error": str(e)}
+            return {"total_rub": 0.0, "total_usd": 0.0, "accounts": [], "error": str(e)}
         except Exception as e:
             logger.error(f"T-Bank Client Error: {e}")
-            return {"total_rub": 0.0, "total_usd": 0.0, "error": str(e)}
+            return {"total_rub": 0.0, "total_usd": 0.0, "accounts": [], "error": str(e)}
 
         total_usd = total_rub / usd_rub_rate if usd_rub_rate > 0 else 0.0
 
-        return {"total_rub": round(total_rub, 2), "total_usd": round(total_usd, 2)}
+        return {
+            "total_rub": round(total_rub, 2),
+            "total_usd": round(total_usd, 2),
+            "accounts": accounts_list,
+        }

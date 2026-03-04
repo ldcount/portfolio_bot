@@ -52,6 +52,7 @@ class Aggregator:
                 else:
                     summary["tbank_rub"] = tbank_data.get("total_rub", 0.0)
                     summary["tbank_usd"] = tbank_data.get("total_usd", 0.0)
+                    summary["tbank_accounts"] = tbank_data.get("accounts", [])
             except Exception as e:
                 summary["errors"]["tbank"] = str(e)
                 logger.error(f"T-Bank aggregation error: {e}")
@@ -112,12 +113,18 @@ class Aggregator:
         lines.append(f"💵 <b>Portfolio summary {current_date}</b>")
         lines.append("")
 
-        lines.append("<b>RUB</b>")
+        lines.append("<b>T-BANK RUB</b>")
 
-        tbank_line_base = f"T-BANK: <code>{fmt(tbank_rub_val, 'RUB')}</code> or <code>{fmt(tbank_usd_val, 'USD')}</code>"
+        tbank_accounts = summary.get("tbank_accounts", [])
+        if tbank_accounts:
+            for acc in tbank_accounts:
+                lines.append(f"{acc['name']}: <code>{fmt(acc['rub'], 'RUB')}</code>")
         if "tbank" in summary["errors"]:
-            tbank_line_base += f" (ERROR: {summary['errors']['tbank']})"
-        lines.append(tbank_line_base)
+            lines.append(f"⚠️ ERROR: {summary['errors']['tbank']}")
+
+        lines.append("Total T-BANK")
+        lines.append(f"RUB: <code>{fmt(tbank_rub_val, 'RUB')}</code>")
+        lines.append(f"USD: <code>{fmt(tbank_usd_val, 'USD')}</code>")
         lines.append("")
 
         lines.append("<b>CRYPTO USD</b>")
