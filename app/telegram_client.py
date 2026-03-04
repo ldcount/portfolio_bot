@@ -164,7 +164,7 @@ class TelegramBot:
             msg = self.aggregator.format_message(summary)
             # Add timestamp to show when it was last generated
             now = datetime.now(Config.get_timezone_obj()).strftime("%H:%M:%S")
-            msg += f"\n<i>Last updated: {now}</i>"
+            msg += f"\n\n<i>Last updated: {now}</i>"
 
             await status_msg.edit_text(
                 text=msg, parse_mode="HTML", reply_markup=self._get_status_keyboard()
@@ -354,7 +354,7 @@ class TelegramBot:
                 summary = self.aggregator.get_portfolio_summary()
                 msg = self.aggregator.format_message(summary)
                 now = datetime.now(Config.get_timezone_obj()).strftime("%H:%M:%S")
-                msg += f"\n<i>Last updated: {now}</i>"
+                msg += f"\n\n<i>Last updated: {now}</i>"
 
                 await query.edit_message_text(
                     text=msg,
