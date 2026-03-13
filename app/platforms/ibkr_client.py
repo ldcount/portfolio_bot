@@ -1,7 +1,10 @@
 import logging
+import json
+import os
 import time
 import requests
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from requests.exceptions import ConnectionError, Timeout
 from app.config import Config
 
@@ -14,6 +17,11 @@ class IBKRClient:
         self.query_id = Config.IBKR_QUERY_ID
         self.base_url = "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest"
         self.download_url = "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement"
+        self.cache_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "data",
+            "ibkr_cache.json",
+        )
 
         if not self.token or not self.query_id:
             logger.warning("IBKR Flex credentials not set.")
@@ -28,10 +36,25 @@ class IBKRClient:
         if not self.token or not self.query_id:
             return {"total_usd": 0.0}
 
+        cached = self._load_cache()
+        if cached and not self._should_refresh_cache(cached):
+            logger.info(
+                "Using cached IBKR Flex result from %s (report date: %s)",
+                cached.get("fetched_at", "?"),
+                cached.get("report_date", "?"),
+            )
+            return {
+                "total_usd": cached.get("total_usd", 0.0),
+                "report_date": cached.get("report_date"),
+            }
+
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                return self._fetch_report()
+                result = self._fetch_report()
+                if "error" not in result:
+                    self._save_cache(result)
+                return result
             except (ConnectionError, Timeout, OSError) as e:
                 last_error = e
                 if attempt < 2:
@@ -46,7 +69,61 @@ class IBKRClient:
                 return {"total_usd": 0.0, "error": str(e)}
 
         logger.error(f"IBKR: all 3 attempts failed: {last_error}")
+        if cached:
+            logger.warning("Falling back to cached IBKR Flex result after fetch failure.")
+            return {
+                "total_usd": cached.get("total_usd", 0.0),
+                "report_date": cached.get("report_date"),
+                "error": f"Using cached IBKR data after fetch failure: {last_error}",
+            }
         return {"total_usd": 0.0, "error": str(last_error)}
+
+    def _load_cache(self) -> dict | None:
+        if not os.path.exists(self.cache_file):
+            return None
+        try:
+            with open(self.cache_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read IBKR cache: {e}")
+            return None
+
+    def _save_cache(self, result: dict) -> None:
+        os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+        payload = {
+            "total_usd": result.get("total_usd", 0.0),
+            "report_date": result.get("report_date"),
+            "fetched_at": self._now().isoformat(),
+        }
+        try:
+            with open(self.cache_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write IBKR cache: {e}")
+
+    def _should_refresh_cache(self, cached: dict) -> bool:
+        fetched_at = cached.get("fetched_at")
+        if not fetched_at:
+            return True
+
+        try:
+            fetched_dt = datetime.fromisoformat(fetched_at)
+        except ValueError:
+            return True
+
+        now = self._now()
+        refresh_hour = Config.WINDOW_START_HOUR
+
+        if fetched_dt.date() == now.date():
+            return False
+
+        if now.hour < refresh_hour:
+            return False
+
+        return True
+
+    def _now(self) -> datetime:
+        return datetime.now(Config.get_timezone_obj())
 
     def _fetch_report(self) -> dict:
         """Single attempt to fetch the IBKR Flex report. Raises on network errors."""
@@ -114,6 +191,7 @@ class IBKRClient:
             equity_summary = flex_stmt.find(".//EquitySummaryInBase")
 
             nav = 0.0
+            report_date = None
             found = False
 
             # Strategy 1: Look for AccountInformation -> NetLiquidation (if present)
@@ -141,9 +219,11 @@ class IBKRClient:
 
                     if "total" in last_entry.attrib:
                         nav = float(last_entry.attrib["total"])
+                        report_date = last_entry.attrib.get("reportDate")
                         found = True
                     elif "netLiquidation" in last_entry.attrib:
                         nav = float(last_entry.attrib["netLiquidation"])
+                        report_date = last_entry.attrib.get("reportDate")
                         found = True
 
             if not found:
@@ -159,7 +239,12 @@ class IBKRClient:
 
                 return {"total_usd": 0.0, "error": "NAV not found in report"}
 
-            return {"total_usd": nav}
+            if report_date is None and acc_info is not None:
+                report_date = acc_info.attrib.get("fromDate") or acc_info.attrib.get(
+                    "date"
+                )
+
+            return {"total_usd": nav, "report_date": report_date}
 
         except Exception as e:
             logger.error(f"Error parsing IBKR XML: {e}")
