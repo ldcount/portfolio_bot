@@ -37,6 +37,7 @@ Main entrypoint: `app/main.py`.
 | `/status` | Fetch and send the current portfolio snapshot immediately |
 | `/frequency <minutes>` | Change how often the bot sends automatic snapshots (e.g. `/frequency 60`) |
 | `/history` | Show portfolio values for up to the last 30 days + trend chart |
+| `/rub_chart` | Send only the last 30 days trend chart in RUB |
 | `/pie_chart` | Send a pie chart of the current portfolio allocation by platform |
 | `/export` | Download raw portfolio history as a `portfolio_history.json` file attachment |
 | `/help` | List all available commands with descriptions |
@@ -227,6 +228,7 @@ Try in Telegram:
 - `/status` — immediate portfolio snapshot
 - `/frequency 5` — switch to 5-minute scan interval (next fire aligned to 08:00 anchor)
 - `/history` — view past 30 days + trend chart
+- `/rub_chart` — send only the RUB trend chart
 - `/pie_chart` — allocation pie chart (Crypto / IBKR / T-Bank)
 - `/export` — download `portfolio_history.json`
 - `/help` — list all commands
@@ -335,4 +337,3 @@ journalctl -u portfolio-bot -f
 - `data/portfolio_history.json` — persistent daily history log
 - `app/platforms/*.py` — platform-specific integrations
 - `requirements.txt` — dependencies
-

@@ -45,6 +45,9 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("history", self.history_command))
         self.application.add_handler(
+            CommandHandler("rub_chart", self.rub_chart_command)
+        )
+        self.application.add_handler(
             CommandHandler("pie_chart", self.pie_chart_command)
         )
         self.application.add_handler(CommandHandler("export", self.export_command))
@@ -254,6 +257,7 @@ class TelegramBot:
             f"(current: every {self.poll_interval_minutes} min, anchored to "
             f"{Config.WINDOW_START_HOUR:02d}:00)\n"
             "/history — view portfolio values for the last 30 days + trend chart\n"
+            "/rub_chart — send the last 30 days trend chart in RUB\n"
             "/pie_chart — send a pie chart of current allocation by platform\n"
             "/export — download raw portfolio history as a JSON file\n"
             "/help — show this help message"
@@ -304,6 +308,49 @@ class TelegramBot:
             )
         except Exception as e:
             logger.error(f"Chart generation failed: {e}")
+            await reply_text("⚠️ Could not generate chart.")
+
+    async def rub_chart_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle /rub_chart — send the RUB trend chart for the last 30 days."""
+        if not self._is_authorized(update):
+            await update.message.reply_text("Unauthorized access.")
+            return
+
+        await self._send_rub_chart(
+            update.message.reply_text, update.message.reply_photo
+        )
+
+    async def _send_rub_chart(self, reply_text, reply_photo):
+        """Internal logic for sending the RUB chart, usable by commands and callbacks."""
+        entries = history_manager.get_history(30)
+        if not entries:
+            await reply_text(
+                "No portfolio history recorded yet. "
+                "Data is saved automatically on each scheduled snapshot."
+            )
+            return
+
+        try:
+            buf = await asyncio.to_thread(
+                chart_module.build_portfolio_chart,
+                entries,
+                "RUB",
+                "#D64541",
+            )
+            await reply_photo(
+                photo=buf,
+                caption="📈 Portfolio RUB trend",
+            )
+        except RuntimeError as e:
+            logger.warning(f"RUB chart skipped (matplotlib unavailable): {e}")
+        except (TimedOut, NetworkError) as e:
+            logger.warning(
+                f"Telegram network error while sending RUB chart (photo may still arrive): {e}"
+            )
+        except Exception as e:
+            logger.error(f"RUB chart generation failed: {e}")
             await reply_text("⚠️ Could not generate chart.")
 
     async def pie_chart_command(
