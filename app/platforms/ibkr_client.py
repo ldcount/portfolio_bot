@@ -12,11 +12,37 @@ logger = logging.getLogger(__name__)
 
 
 class IBKRClient:
+    TRANSIENT_DOWNLOAD_ERROR_CODES = {
+        "1003",
+        "1004",
+        "1005",
+        "1006",
+        "1007",
+        "1008",
+        "1009",
+        "1019",
+        "1021",
+    }
+
     def __init__(self):
         self.token = Config.IBKR_FLEX_TOKEN
         self.query_id = Config.IBKR_QUERY_ID
-        self.base_url = "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest"
-        self.download_url = "https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement"
+        self.request_base = (
+            "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+        )
+        self.base_url = f"{self.request_base}/SendRequest"
+        self.download_url = f"{self.request_base}/GetStatement"
+        self.send_timeout = (10, 30)
+        self.download_timeout = (10, 60)
+        self.download_poll_attempts = 5
+        self.download_poll_delay_seconds = 5
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": "portfolio-bot/1.0",
+                "Accept": "application/xml, text/xml;q=0.9, */*;q=0.8",
+            }
+        )
         self.cache_file = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "data",
@@ -129,40 +155,83 @@ class IBKRClient:
         """Single attempt to fetch the IBKR Flex report. Raises on network errors."""
         # Step 1: Request the report
         logger.info("Requesting IBKR Flex Report...")
-        resp = requests.get(
+        resp = self.session.get(
             self.base_url,
             params={"t": self.token, "q": self.query_id, "v": "3"},
-            timeout=10,
+            timeout=self.send_timeout,
         )
         resp.raise_for_status()
 
         # Parse step 1 XML
         root = ET.fromstring(resp.content)
-        status = root.find("Status")
+        status = root.findtext("Status")
 
-        if status is not None and status.text == "Success":
-            ref_code = root.find("ReferenceCode").text
-            base_url = root.find("Url").text
+        if status == "Success":
+            ref_code = root.findtext("ReferenceCode")
+            if not ref_code:
+                return {
+                    "total_usd": 0.0,
+                    "error": "IBKR response did not include a reference code",
+                }
 
-            logger.info(f"IBKR Report generated. Reference: {ref_code}. Downloading...")
+            logger.info("IBKR report generated. Reference: %s. Downloading...", ref_code)
 
-            # Step 2: Download the report
-            dl_resp = requests.get(
-                base_url,
+            # IBKR returns a legacy URL in the response payload; the current API docs
+            # say to ignore it and call the documented GetStatement endpoint instead.
+            return self._download_report(ref_code)
+
+        error_code = root.findtext("ErrorCode", "?")
+        error_msg = root.findtext("ErrorMessage", "?")
+        msg = f"IBKR Error {error_code}: {error_msg}"
+        logger.error(msg)
+        return {"total_usd": 0.0, "error": msg}
+
+    def _download_report(self, ref_code: str) -> dict:
+        for attempt in range(self.download_poll_attempts):
+            dl_resp = self.session.get(
+                self.download_url,
                 params={"t": self.token, "q": ref_code, "v": "3"},
-                timeout=30,
+                timeout=self.download_timeout,
             )
             dl_resp.raise_for_status()
 
-            # Parse step 2 XML (Actual Report)
-            return self._parse_report(dl_resp.content)
+            service_error = self._extract_service_error(dl_resp.content)
+            if not service_error:
+                return self._parse_report(dl_resp.content)
 
-        else:
-            error_code = root.find("ErrorCode")
-            error_msg = root.find("ErrorMessage")
-            msg = f"IBKR Error {error_code.text if error_code is not None else '?'}: {error_msg.text if error_msg is not None else '?'}"
+            error_code = service_error["code"]
+            if (
+                error_code in self.TRANSIENT_DOWNLOAD_ERROR_CODES
+                and attempt < self.download_poll_attempts - 1
+            ):
+                wait = self.download_poll_delay_seconds * (attempt + 1)
+                logger.info(
+                    "IBKR report not ready yet (%s). Retrying download in %ss.",
+                    service_error["message"],
+                    wait,
+                )
+                time.sleep(wait)
+                continue
+
+            msg = f"IBKR Error {error_code}: {service_error['message']}"
             logger.error(msg)
             return {"total_usd": 0.0, "error": msg}
+
+        return {
+            "total_usd": 0.0,
+            "error": "IBKR report could not be retrieved after polling",
+        }
+
+    def _extract_service_error(self, xml_content) -> dict | None:
+        root = ET.fromstring(xml_content)
+        status = root.findtext("Status")
+        if status != "Fail":
+            return None
+
+        return {
+            "code": root.findtext("ErrorCode", "?"),
+            "message": root.findtext("ErrorMessage", "?"),
+        }
 
     def _parse_report(self, xml_content) -> dict:
         """

@@ -202,12 +202,12 @@ Use two-step IBKR API flow:
 
 1) Request report generation:
 ```text
-https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest?t=<TOKEN>&q=<QUERY_ID>&v=3
+https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest?t=<TOKEN>&q=<QUERY_ID>&v=3
 ```
 
 2) Read `ReferenceCode` from response and download report:
 ```text
-https://www.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement?t=<TOKEN>&q=<REFERENCE_CODE>&v=3
+https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement?t=<TOKEN>&q=<REFERENCE_CODE>&v=3
 ```
 
 If XML is returned and includes your account summary/NAV, configuration is correct.

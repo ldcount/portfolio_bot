@@ -61,10 +61,9 @@ class Aggregator:
         if Config.IBKR_FLEX_TOKEN and Config.IBKR_QUERY_ID:
             try:
                 ibkr_data = self.ibkr.get_portfolio_summary()
+                summary["ibkr_usd"] = ibkr_data.get("total_usd", 0.0)
                 if "error" in ibkr_data:
                     summary["errors"]["ibkr"] = ibkr_data["error"]
-                else:
-                    summary["ibkr_usd"] = ibkr_data.get("total_usd", 0.0)
             except Exception as e:
                 summary["errors"]["ibkr"] = str(e)
                 logger.error(f"IBKR aggregation error: {e}")
