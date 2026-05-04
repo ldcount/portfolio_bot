@@ -25,3 +25,4 @@ Thumbs.db
 
 # Portfolio history (live data — managed on server, no need to push from here)
 data/portfolio_history.json
+job_search.md

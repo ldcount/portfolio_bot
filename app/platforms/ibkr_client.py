@@ -34,8 +34,9 @@ class IBKRClient:
         self.download_url = f"{self.request_base}/GetStatement"
         self.send_timeout = (10, 30)
         self.download_timeout = (10, 60)
-        self.download_poll_attempts = 5
-        self.download_poll_delay_seconds = 5
+        self.download_poll_attempts = 10
+        self.download_initial_delay_seconds = 30
+        self.download_poll_delay_seconds = 30
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -80,6 +81,16 @@ class IBKRClient:
                 result = self._fetch_report()
                 if "error" not in result:
                     self._save_cache(result)
+                elif cached and self._is_transient_service_error(result.get("error")):
+                    logger.warning(
+                        "Falling back to cached IBKR Flex result after transient service error: %s",
+                        result["error"],
+                    )
+                    return {
+                        "total_usd": cached.get("total_usd", 0.0),
+                        "report_date": cached.get("report_date"),
+                        "error": f"Using cached IBKR data after fetch failure: {result['error']}",
+                    }
                 return result
             except (ConnectionError, Timeout, OSError) as e:
                 last_error = e
@@ -151,6 +162,14 @@ class IBKRClient:
     def _now(self) -> datetime:
         return datetime.now(Config.get_timezone_obj())
 
+    def _is_transient_service_error(self, error: str | None) -> bool:
+        if not error:
+            return False
+        return any(
+            f"IBKR Error {code}:" in error
+            for code in self.TRANSIENT_DOWNLOAD_ERROR_CODES
+        )
+
     def _fetch_report(self) -> dict:
         """Single attempt to fetch the IBKR Flex report. Raises on network errors."""
         # Step 1: Request the report
@@ -187,6 +206,13 @@ class IBKRClient:
         return {"total_usd": 0.0, "error": msg}
 
     def _download_report(self, ref_code: str) -> dict:
+        if self.download_initial_delay_seconds > 0:
+            logger.info(
+                "Waiting %ss for IBKR report generation before download.",
+                self.download_initial_delay_seconds,
+            )
+            time.sleep(self.download_initial_delay_seconds)
+
         for attempt in range(self.download_poll_attempts):
             dl_resp = self.session.get(
                 self.download_url,
@@ -204,7 +230,7 @@ class IBKRClient:
                 error_code in self.TRANSIENT_DOWNLOAD_ERROR_CODES
                 and attempt < self.download_poll_attempts - 1
             ):
-                wait = self.download_poll_delay_seconds * (attempt + 1)
+                wait = self.download_poll_delay_seconds
                 logger.info(
                     "IBKR report not ready yet (%s). Retrying download in %ss.",
                     service_error["message"],
@@ -225,12 +251,14 @@ class IBKRClient:
     def _extract_service_error(self, xml_content) -> dict | None:
         root = ET.fromstring(xml_content)
         status = root.findtext("Status")
-        if status != "Fail":
+        error_code = root.findtext("ErrorCode")
+        error_message = root.findtext("ErrorMessage")
+        if status not in {"Fail", "Warn"} and not (error_code or error_message):
             return None
 
         return {
-            "code": root.findtext("ErrorCode", "?"),
-            "message": root.findtext("ErrorMessage", "?"),
+            "code": error_code or "?",
+            "message": error_message or "?",
         }
 
     def _parse_report(self, xml_content) -> dict:
