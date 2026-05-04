@@ -35,8 +35,8 @@ class IBKRClient:
         self.send_timeout = (10, 30)
         self.download_timeout = (10, 60)
         self.download_poll_attempts = 10
-        self.download_initial_delay_seconds = 30
-        self.download_poll_delay_seconds = 30
+        self.download_initial_delay_seconds = 10
+        self.download_poll_delay_seconds = 10
         self.session = requests.Session()
         self.session.headers.update(
             {
