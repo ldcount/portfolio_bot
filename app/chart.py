@@ -152,7 +152,7 @@ def build_pie_chart(summary: dict) -> io.BytesIO:
     ibkr_usd = summary.get("ibkr_usd", 0.0)
     tbank_usd = summary.get("tbank_usd", 0.0)
 
-    labels_raw = ["Crypto (Bybit+OKX)", "IBKR", "T-Bank"]
+    labels_raw = ["Crypto (Bybit+OKX+KuCoin)", "IBKR", "T-Bank"]
     values_raw = [crypto_usd, ibkr_usd, tbank_usd]
     colors_raw = ["#4A90D9", "#27AE60", "#E67E22"]
 

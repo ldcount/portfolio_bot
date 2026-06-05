@@ -2,6 +2,7 @@ import logging
 from app.config import Config
 from app.platforms.bybit_client import BybitClient
 from app.platforms.okx_client import OkxClient
+from app.platforms.kucoin_client import KucoinClient
 from app.platforms.tbank_client import TBankClient
 from app.platforms.ibkr_client import IBKRClient
 
@@ -12,6 +13,7 @@ class Aggregator:
     def __init__(self):
         self.bybit = BybitClient()
         self.okx = OkxClient()
+        self.kucoin = KucoinClient()
         self.tbank = TBankClient()
         self.ibkr = IBKRClient()
         # FX and other platforms to be added later
@@ -20,6 +22,7 @@ class Aggregator:
         summary = {
             "bybit_usd": 0.0,
             "okx_usd": 0.0,
+            "kucoin_usd": 0.0,
             "tbank_rub": 0.0,
             "tbank_usd": 0.0,
             "ibkr_usd": 0.0,
@@ -42,6 +45,14 @@ class Aggregator:
             except Exception as e:
                 summary["errors"]["okx"] = str(e)
                 logger.error(f"OKX aggregation error: {e}")
+
+        # KuCoin
+        if Config.KUCOIN_API_KEY:
+            try:
+                summary["kucoin_usd"] = self.kucoin.get_balance_usd()
+            except Exception as e:
+                summary["errors"]["kucoin"] = str(e)
+                logger.error(f"KuCoin aggregation error: {e}")
 
         # T-Bank
         if Config.TBANK_API_TOKEN:
@@ -68,7 +79,9 @@ class Aggregator:
                 summary["errors"]["ibkr"] = str(e)
                 logger.error(f"IBKR aggregation error: {e}")
 
-        summary["crypto_usd"] = summary["bybit_usd"] + summary["okx_usd"]
+        summary["crypto_usd"] = (
+            summary["bybit_usd"] + summary["okx_usd"] + summary["kucoin_usd"]
+        )
 
         return summary
 
@@ -98,6 +111,7 @@ class Aggregator:
         # Crypto
         bybit_usd = summary.get("bybit_usd", 0.0)
         okx_usd = summary.get("okx_usd", 0.0)
+        kucoin_usd = summary.get("kucoin_usd", 0.0)
         crypto_usd = summary.get("crypto_usd", 0.0)
 
         # IBKR
@@ -109,7 +123,7 @@ class Aggregator:
 
         # Build Message
         lines = []
-        lines.append(f"<b>Portfolio summary {current_date}</b>")
+        lines.append(f"🤑<b>Portfolio summary {current_date}</b>")
         lines.append("")
 
         lines.append("<b>T-BANK RUB</b>")
@@ -137,6 +151,11 @@ class Aggregator:
         if "okx" in summary["errors"]:
             okx_line += f" (ERROR)"
         lines.append(okx_line)
+
+        kucoin_line = f"KuCoin: <code>{fmt(kucoin_usd, 'USD')}</code>"
+        if "kucoin" in summary["errors"]:
+            kucoin_line += f" (ERROR)"
+        lines.append(kucoin_line)
 
         lines.append(f"Total crypto: <code>{fmt(crypto_usd, 'USD')}</code>")
         lines.append("")

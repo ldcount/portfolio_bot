@@ -29,6 +29,11 @@ class Config:
     OKX_API_SECRET = os.getenv("OKX_API_SECRET")
     OKX_API_PASSPHRASE = os.getenv("OKX_API_PASSPHRASE")
 
+    # KuCoin
+    KUCOIN_API_KEY = os.getenv("KUCOIN_API_KEY")
+    KUCOIN_API_SECRET = os.getenv("KUCOIN_API_SECRET")
+    KUCOIN_API_PASSPHRASE = os.getenv("KUCOIN_API_PASSPHRASE")
+
     # T-Bank
     TBANK_API_TOKEN = os.getenv("TBANK_API_TOKEN")
 
@@ -60,6 +65,14 @@ class Config:
             missing.append("OKX_API_SECRET")
         if not cls.OKX_API_PASSPHRASE:
             missing.append("OKX_API_PASSPHRASE")
+
+        if cls.KUCOIN_API_KEY or cls.KUCOIN_API_SECRET or cls.KUCOIN_API_PASSPHRASE:
+            if not cls.KUCOIN_API_KEY:
+                missing.append("KUCOIN_API_KEY")
+            if not cls.KUCOIN_API_SECRET:
+                missing.append("KUCOIN_API_SECRET")
+            if not cls.KUCOIN_API_PASSPHRASE:
+                missing.append("KUCOIN_API_PASSPHRASE")
 
         if missing:
             raise ValueError(
