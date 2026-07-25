@@ -326,7 +326,7 @@ class TelegramBot:
         if not metrics:
             return ""
 
-        lines = ["", "<b>PERFORMANCE</b>"]
+        lines = ["", "", "<b>PERFORMANCE</b>"]
         for metric in metrics:
             change = metric["usd_change"]
             arrow = "▲" if change > 0 else "▼" if change < 0 else "•"

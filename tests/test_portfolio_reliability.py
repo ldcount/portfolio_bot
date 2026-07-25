@@ -401,6 +401,7 @@ class StatusPerformanceTests(unittest.TestCase):
 
         text = bot._format_performance_context({"is_complete": True})
 
+        self.assertTrue(text.startswith("\n\n<b>PERFORMANCE</b>"))
         self.assertIn("<b>PERFORMANCE</b>", text)
         self.assertIn("1D: <code>▲ $50 (5.0%)</code>", text)
         self.assertIn("7D: <code>▼ $20 (2.0%)</code>", text)
