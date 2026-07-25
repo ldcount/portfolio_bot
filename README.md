@@ -36,10 +36,11 @@ Main entrypoint: `app/main.py`.
 | Command | Description |
 |---|---|
 | `/status` | Fetch and send the current portfolio snapshot immediately |
-| `/frequency <minutes>` | Change how often the bot sends automatic snapshots (e.g. `/frequency 60`) |
-| `/history` | Show portfolio values for up to the last 30 days + trend chart |
+| `/history` | Show a mobile-friendly performance chart with optional daily values |
 | `/rub_chart` | Send only the last 30 days trend chart in RUB |
-| `/pie_chart` | Send a pie chart of the current portfolio allocation by platform |
+| `/allocation` | Show current allocation by platform or asset class |
+| `/settings` | Choose a persistent automatic-report preset or disable reports |
+| `/frequency <minutes>` | Set a custom persistent automatic-report interval |
 | `/export` | Download raw portfolio history as a `portfolio_history.json` file attachment |
 | `/help` | List all available commands with descriptions |
 
@@ -58,8 +59,12 @@ After each scheduled snapshot the bot writes today's portfolio totals to `data/p
 
 - Key format: `DD-MM-YYYY`
 - Only the **last** scheduled run of the day is stored (each run overwrites the same key).
-- `/history` returns entries sorted newest-first, up to 30 days.
+- `/history` opens the trend chart first; daily values are available from its inline button.
+- Complete snapshots show 1-day and 7-day changes when suitable comparison data exists.
 - The file is created automatically on first write; the `data/` folder is committed with 5 seeded dummy entries so `/history` works immediately.
+
+Automatic-report choices made through `/settings` or `/frequency` are stored in
+`data/bot_settings.json` and survive bot restarts. The runtime settings file is ignored by Git.
 
 ---
 
@@ -88,7 +93,7 @@ Create a `.env` file in the project root. All settings are loaded from environme
 - `IBKR_FLEX_TOKEN` — IBKR Flex Web Service token.
 - `IBKR_QUERY_ID` — ID of your saved Flex query.
 - `TIMEZONE` (default: `Europe/Paris`)
-- `POLL_INTERVAL_MINUTES` (default: `120`) — startup default; can be changed live with `/frequency`.
+- `POLL_INTERVAL_MINUTES` (default: `120`) — initial default; persisted `/settings` or `/frequency` choices take precedence after the first change.
 - `WINDOW_START_HOUR` (default: `8`)
 - `WINDOW_END_HOUR` (default: `20`)
 - `LOG_LEVEL` (default: `INFO`)
@@ -233,7 +238,8 @@ Try in Telegram:
 - `/frequency 5` — switch to 5-minute scan interval (next fire aligned to 08:00 anchor)
 - `/history` — view past 30 days + trend chart
 - `/rub_chart` — send only the RUB trend chart
-- `/pie_chart` — allocation pie chart (Crypto / IBKR / T-Bank)
+- `/allocation` — allocation donut chart by platform or asset class
+- `/settings` — automatic-report presets and disable control
 - `/export` — download `portfolio_history.json`
 - `/help` — list all commands
 

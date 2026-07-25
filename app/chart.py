@@ -3,7 +3,7 @@ chart.py — in-memory portfolio charts using matplotlib.
 
 Public API:
     build_portfolio_chart(entries)  -> io.BytesIO  (line chart, last 30 days)
-    build_pie_chart(summary)        -> io.BytesIO  (pie chart, current allocation)
+    build_pie_chart(summary, grouping) -> io.BytesIO (donut allocation chart)
 """
 
 import io
@@ -57,21 +57,12 @@ def build_portfolio_chart(
     # Entries arrive newest-first — reverse for chronological order on the x-axis
     chronological = list(reversed(entries))
 
-    # Sample every nth point (keep first and last to anchor the chart properly)
-    if len(chronological) > 3:
-        sampled = chronological[::2]
-        # Always include the most recent point
-        if chronological[-1] not in sampled:
-            sampled.append(chronological[-1])
-    else:
-        sampled = chronological
-
     # Parse dates and currency values
-    dates = [datetime.strptime(e["date"], "%d-%m-%Y") for e in sampled]
-    values = [e[currency] for e in sampled]
+    dates = [datetime.strptime(e["date"], "%d-%m-%Y") for e in chronological]
+    values = [e[currency] for e in chronological]
 
     # --- Build the figure ---
-    fig, ax = plt.subplots(figsize=(10, 5), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=150)
 
     ax.plot(
         dates,
@@ -84,30 +75,43 @@ def build_portfolio_chart(
         markeredgecolor=line_color,
         markeredgewidth=1.5,
     )
+    ax.fill_between(dates, values, min(values), color=line_color, alpha=0.10)
 
-    # Annotate each plotted point with its value
-    for d, v in zip(dates, values):
+    # Keep mobile labels readable: only latest, minimum, and maximum are annotated.
+    important_indexes = {len(values) - 1, values.index(min(values)), values.index(max(values))}
+    for index in sorted(important_indexes):
+        d = dates[index]
+        v = values[index]
+        offset = -16 if v == max(values) and v != min(values) else 9
         ax.annotate(
             f"{symbol}{v:,.0f}".replace(",", " "),
             xy=(d, v),
-            xytext=(0, 8),
+            xytext=(0, offset),
             textcoords="offset points",
             ha="center",
-            fontsize=7,
+            fontsize=8,
+            fontweight="semibold",
             color="#333333",
         )
 
-    # X-axis: format as DD-Mon
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
-    fig.autofmt_xdate(rotation=30, ha="right")
+    # Limit date ticks so the exported image stays legible in Telegram.
+    locator = mdates.AutoDateLocator(minticks=4, maxticks=7)
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
 
     # Y-axis: compact currency formatting (e.g. $42 000 / ₽42 000)
     ax.yaxis.set_major_formatter(
         plt.FuncFormatter(lambda val, _: f"{symbol}{val:,.0f}".replace(",", " "))
     )
 
-    ax.set_title(f"Portfolio ({currency}) — last 30 days", fontsize=11, pad=10)
-    ax.set_xlabel("Date", fontsize=9)
+    period_change = values[-1] - values[0]
+    period_pct = period_change / values[0] * 100 if values[0] else 0.0
+    direction = "▲" if period_change > 0 else "▼" if period_change < 0 else "•"
+    ax.set_title(
+        f"Portfolio ({currency}) — {direction} {abs(period_pct):.1f}% over period",
+        fontsize=11,
+        pad=12,
+    )
     ax.set_ylabel(currency, fontsize=9)
     ax.grid(axis="y", linestyle="--", alpha=0.5)
     ax.spines[["top", "right"]].set_visible(False)
@@ -121,18 +125,20 @@ def build_portfolio_chart(
     buf.seek(0)
 
     logger.info(
-        f"Portfolio {currency} chart built with {len(sampled)} data points."
+        f"Portfolio {currency} chart built with {len(chronological)} data points."
     )
     return buf
 
 
-def build_pie_chart(summary: dict) -> io.BytesIO:
+def build_pie_chart(summary: dict, grouping: str = "platform") -> io.BytesIO:
     """
-    Build a pie chart showing current portfolio allocation by platform.
+    Build a donut chart showing allocation by platform or asset class.
 
     Parameters
     ----------
     summary : dict  as returned by Aggregator.get_portfolio_summary()
+    grouping : str
+        Either "platform" or "asset_class".
 
     Returns
     -------
@@ -148,13 +154,29 @@ def build_pie_chart(summary: dict) -> io.BytesIO:
             "matplotlib is not installed. Run: pip install matplotlib"
         ) from exc
 
-    crypto_usd = summary.get("crypto_usd", 0.0)
-    ibkr_usd = summary.get("ibkr_usd", 0.0)
-    tbank_usd = summary.get("tbank_usd", 0.0)
-
-    labels_raw = ["Crypto (Bybit+OKX+KuCoin)", "IBKR", "T-Bank"]
-    values_raw = [crypto_usd, ibkr_usd, tbank_usd]
-    colors_raw = ["#4A90D9", "#27AE60", "#E67E22"]
+    grouping = grouping.lower()
+    if grouping == "platform":
+        labels_raw = ["Bybit", "OKX", "KuCoin", "T-Bank", "IBKR"]
+        values_raw = [
+            summary.get("bybit_usd", 0.0),
+            summary.get("okx_usd", 0.0),
+            summary.get("kucoin_usd", 0.0),
+            summary.get("tbank_usd", 0.0),
+            summary.get("ibkr_usd", 0.0),
+        ]
+        colors_raw = ["#4A90E2", "#6C5CE7", "#00B894", "#F39C12", "#27AE60"]
+        title = "Portfolio allocation by platform"
+    elif grouping == "asset_class":
+        labels_raw = ["Crypto", "Stocks", "T-Bank"]
+        values_raw = [
+            summary.get("crypto_usd", 0.0),
+            summary.get("ibkr_usd", 0.0),
+            summary.get("tbank_usd", 0.0),
+        ]
+        colors_raw = ["#4A90E2", "#27AE60", "#F39C12"]
+        title = "Portfolio allocation by asset class"
+    else:
+        raise ValueError("Unsupported allocation grouping.")
 
     # Drop zero-value segments
     data = [(l, v, c) for l, v, c in zip(labels_raw, values_raw, colors_raw) if v > 0]
@@ -166,31 +188,55 @@ def build_pie_chart(summary: dict) -> io.BytesIO:
     total = sum(values)
 
     def autopct(pct):
-        amount = pct / 100 * total
-        return f"{pct:.1f}%\n${amount:,.0f}".replace(",", " ")
+        return f"{pct:.0f}%" if pct >= 7 else ""
 
-    fig, ax = plt.subplots(figsize=(7, 5), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 4.8), dpi=150)
     wedges, texts, autotexts = ax.pie(
         values,
-        labels=labels,
         colors=colors,
         autopct=autopct,
-        startangle=140,
-        pctdistance=0.75,
-        wedgeprops=dict(linewidth=1.5, edgecolor="white"),
+        startangle=90,
+        counterclock=False,
+        pctdistance=0.78,
+        wedgeprops=dict(width=0.42, linewidth=2, edgecolor="white"),
     )
 
-    for t in texts:
-        t.set_fontsize(10)
     for at in autotexts:
-        at.set_fontsize(8)
+        at.set_fontsize(9)
+        at.set_fontweight("bold")
         at.set_color("white")
 
-    ax.set_title(
-        f"Portfolio allocation  —  ${total:,.0f} total".replace(",", " "),
-        fontsize=11,
-        pad=14,
+    ax.text(
+        0,
+        0.04,
+        "TOTAL",
+        ha="center",
+        va="center",
+        fontsize=9,
+        color="#666666",
     )
+    ax.text(
+        0,
+        -0.08,
+        f"${total:,.0f}".replace(",", " "),
+        ha="center",
+        va="center",
+        fontsize=13,
+        fontweight="bold",
+    )
+    legend_labels = [
+        f"{label}  ${value:,.0f}  ({value / total:.1%})".replace(",", " ")
+        for label, value in zip(labels, values)
+    ]
+    ax.legend(
+        wedges,
+        legend_labels,
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
+        frameon=False,
+        fontsize=9,
+    )
+    ax.set_title(title, fontsize=11, pad=14)
 
     fig.tight_layout()
 
@@ -199,5 +245,5 @@ def build_pie_chart(summary: dict) -> io.BytesIO:
     plt.close(fig)
     buf.seek(0)
 
-    logger.info(f"Pie chart built: {dict(zip(labels, values))}")
+    logger.info("Allocation chart built (%s): %s", grouping, dict(zip(labels, values)))
     return buf

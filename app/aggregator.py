@@ -89,10 +89,10 @@ class Aggregator:
         return summary
 
     def format_message(self, summary):
-
         from datetime import datetime
 
-        current_date = datetime.now().strftime("%d %b %Y")
+        current_date = datetime.now(Config.get_timezone_obj()).strftime("%d %b %Y")
+        errors = summary.get("errors", {})
 
         # Helper for formatting: no decimals, space as thousand separator
         def fmt(val, currency="$"):
@@ -126,62 +126,78 @@ class Aggregator:
 
         # Build Message
         lines = []
-        lines.append(f"📈<b>Portfolio summary {current_date}</b>")
+        lines.append(f"📈 <b>Portfolio summary {current_date}</b>")
         lines.append("")
 
-        lines.append("<b>T-BANK RUB</b>")
+        if Config.TBANK_API_TOKEN:
+            lines.append("<b>T-BANK RUB</b>")
 
-        tbank_accounts = summary.get("tbank_accounts", [])
-        if tbank_accounts:
-            for acc in tbank_accounts:
-                lines.append(
-                    f"{escape(str(acc['name']))}: "
-                    f"<code>{fmt(acc['rub'], 'RUB')}</code>"
-                )
-        if "tbank" in summary["errors"]:
-            lines.append("⚠️ ERROR: T-Bank data unavailable")
-
-        lines.append("Total T-BANK")
-        lines.append(f"RUB: <code>{fmt(tbank_rub_val, 'RUB')}</code>")
-        lines.append(f"USD: <code>{fmt(tbank_usd_val, 'USD')}</code>")
-        lines.append("")
+            if "tbank" in errors:
+                lines.append("T-Bank: <b>Unavailable ⚠️</b>")
+            else:
+                tbank_accounts = summary.get("tbank_accounts", [])
+                for acc in tbank_accounts:
+                    lines.append(
+                        f"{escape(str(acc['name']))}: "
+                        f"<code>{fmt(acc['rub'], 'RUB')}</code>"
+                    )
+                lines.append("Total T-BANK")
+                lines.append(f"RUB: <code>{fmt(tbank_rub_val, 'RUB')}</code>")
+                lines.append(f"USD: <code>{fmt(tbank_usd_val, 'USD')}</code>")
+            lines.append("")
 
         lines.append("<b>CRYPTO USD</b>")
 
-        bybit_line = f"ByBit: <code>{fmt(bybit_usd, 'USD')}</code>"
-        if "bybit" in summary["errors"]:
-            bybit_line += f" (ERROR)"
-        lines.append(bybit_line)
+        crypto_sources = [
+            ("bybit", "Bybit", bybit_usd, bool(Config.BYBIT_API_KEY)),
+            ("okx", "OKX", okx_usd, bool(Config.OKX_API_KEY)),
+            ("kucoin", "KuCoin", kucoin_usd, bool(Config.KUCOIN_API_KEY)),
+        ]
+        crypto_has_errors = False
+        for key, name, value, configured in crypto_sources:
+            if not configured:
+                continue
+            if key in errors:
+                lines.append(f"{name}: <b>Unavailable ⚠️</b>")
+                crypto_has_errors = True
+            else:
+                lines.append(f"{name}: <code>{fmt(value, 'USD')}</code>")
 
-        okx_line = f"OKX: <code>{fmt(okx_usd, 'USD')}</code>"
-        if "okx" in summary["errors"]:
-            okx_line += f" (ERROR)"
-        lines.append(okx_line)
-
-        kucoin_line = f"KuCoin: <code>{fmt(kucoin_usd, 'USD')}</code>"
-        if "kucoin" in summary["errors"]:
-            kucoin_line += f" (ERROR)"
-        lines.append(kucoin_line)
-
-        lines.append(f"Total crypto: <code>{fmt(crypto_usd, 'USD')}</code>")
+        crypto_label = "Partial crypto" if crypto_has_errors else "Total crypto"
+        lines.append(f"{crypto_label}: <code>{fmt(crypto_usd, 'USD')}</code>")
         lines.append("")
 
         # IBKR Section
         if Config.IBKR_FLEX_TOKEN:
             lines.append("<b>STOCKS USD</b>")
             ibkr_line = f"IBKR: <code>{fmt(ibkr_usd, 'USD')}</code>"
-            if "ibkr" in summary["errors"]:
-                ibkr_line += " (ERROR)"
+            if "ibkr" in errors:
+                ibkr_line = "IBKR: <b>Unavailable ⚠️</b>"
             lines.append(ibkr_line)
             lines.append("")
 
-        lines.append(f"<b>TOTAL</b>")
+        total_label = "PARTIAL TOTAL" if errors else "TOTAL"
+        lines.append(f"<b>{total_label}</b>")
         lines.append(f"USD: <code>{fmt(grand_total_usd, 'USD')}</code>")
-        lines.append(f"RUB: <code>{fmt(grand_total_rub, 'RUB')}</code>")
+        if "tbank" in errors:
+            lines.append("RUB: <b>Unavailable ⚠️</b>")
+        else:
+            lines.append(f"RUB: <code>{fmt(grand_total_rub, 'RUB')}</code>")
 
-        if not summary.get("is_complete", True):
+        if errors:
+            display_names = {
+                "bybit": "Bybit",
+                "okx": "OKX",
+                "kucoin": "KuCoin",
+                "tbank": "T-Bank",
+                "ibkr": "IBKR",
+            }
+            excluded = ", ".join(
+                display_names.get(key, key) for key in sorted(errors)
+            )
             lines.append("")
-            lines.append("⚠️ <b>Partial data — history was not saved.</b>")
+            lines.append(f"⚠️ <b>Excludes unavailable data: {excluded}.</b>")
+            lines.append("<i>History was not saved for this partial snapshot.</i>")
 
         return "\n".join(lines)
 

@@ -3,7 +3,15 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from telegram import InputFile, Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
+    InputFile,
+    InputMediaPhoto,
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
@@ -11,6 +19,7 @@ from app.config import Config
 from app.aggregator import Aggregator
 from app import history_manager
 from app import chart as chart_module
+from app import settings_manager
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +39,19 @@ class TelegramBot:
             logger.warning("Telegram token not set.")
             return
 
-        self.application = Application.builder().token(self.token).build()
+        self.application = (
+            Application.builder().token(self.token).post_init(self._post_init).build()
+        )
         self.aggregator = Aggregator()
         self._aggregation_lock = asyncio.Lock()
 
-        # Current poll interval (minutes) — can be changed at runtime via /frequency
-        self.poll_interval_minutes = Config.POLL_INTERVAL_MINUTES
+        persisted_settings = settings_manager.load_settings(
+            Config.POLL_INTERVAL_MINUTES
+        )
+        self.poll_interval_minutes = persisted_settings["poll_interval_minutes"]
+        self.scheduled_reports_enabled = persisted_settings[
+            "scheduled_reports_enabled"
+        ]
 
         # Add command handlers
         self.application.add_handler(CommandHandler("status", self.status_command))
@@ -51,6 +67,10 @@ class TelegramBot:
         self.application.add_handler(
             CommandHandler("pie_chart", self.pie_chart_command)
         )
+        self.application.add_handler(
+            CommandHandler("allocation", self.pie_chart_command)
+        )
+        self.application.add_handler(CommandHandler("settings", self.settings_command))
         self.application.add_handler(CommandHandler("export", self.export_command))
         self.application.add_handler(CallbackQueryHandler(self.handle_callback))
         self.application.add_error_handler(self.error_handler)
@@ -64,6 +84,21 @@ class TelegramBot:
     # ------------------------------------------------------------------
     # Scheduling helpers
     # ------------------------------------------------------------------
+
+    async def _post_init(self, application: Application) -> None:
+        """Register Telegram's visible slash-command menu."""
+        commands = [
+            BotCommand("status", "Show the current portfolio"),
+            BotCommand("history", "Show portfolio performance"),
+            BotCommand("allocation", "Show portfolio allocation"),
+            BotCommand("settings", "Change automatic reports"),
+            BotCommand("export", "Export portfolio history"),
+            BotCommand("help", "Show all commands"),
+        ]
+        await application.bot.set_my_commands(
+            commands,
+            scope=BotCommandScopeChat(chat_id=int(self.chat_id)),
+        )
 
     def _seconds_until_next_slot(self) -> float:
         """
@@ -93,13 +128,21 @@ class TelegramBot:
 
     def _schedule_job(self):
         """Schedule (or reschedule) the repeating portfolio snapshot job."""
-        interval_sec = self.poll_interval_minutes * 60
-        first_sec = self._seconds_until_next_slot()
+        if not self.application.job_queue:
+            logger.warning("JobQueue not available; schedule change was saved only.")
+            return
 
         # Remove any existing jobs with our name to avoid duplicates
         current_jobs = self.application.job_queue.get_jobs_by_name("portfolio_snapshot")
         for job in current_jobs:
             job.schedule_removal()
+
+        if not self.scheduled_reports_enabled:
+            logger.info("Automatic portfolio reports are disabled.")
+            return
+
+        interval_sec = self.poll_interval_minutes * 60
+        first_sec = self._seconds_until_next_slot()
 
         self.application.job_queue.run_repeating(
             self.scheduled_job,
@@ -114,6 +157,13 @@ class TelegramBot:
             f"Next fire at {next_dt.strftime('%H:%M')} "
             f"({Config.WINDOW_START_HOUR}:00–{Config.WINDOW_END_HOUR}:00 window)"
         )
+
+    def _set_schedule(self, interval_minutes: int, enabled: bool = True) -> None:
+        """Apply and persist an automatic-report setting."""
+        settings_manager.save_schedule(interval_minutes, enabled)
+        self.poll_interval_minutes = interval_minutes
+        self.scheduled_reports_enabled = enabled
+        self._schedule_job()
 
     # ------------------------------------------------------------------
     # Global error handler
@@ -163,26 +213,148 @@ class TelegramBot:
 
         msg = (
             "👋 <b>Welcome to your Portfolio Tracker!</b>\n\n"
-            "I monitor your balances across various platforms (Crypto, T-Bank, IBKR) "
-            "and provide regular summaries.\n\n"
-            "What would you like to see?"
+            "I monitor your balances across Crypto, T-Bank, and IBKR and provide "
+            "regular summaries. Choose a view below."
         )
         await update.message.reply_text(
-            msg, parse_mode="HTML", reply_markup=self._get_status_keyboard()
+            msg, parse_mode="HTML", reply_markup=self._get_home_keyboard()
         )
 
-    def _get_status_keyboard(self) -> InlineKeyboardMarkup:
-        """Helper to return the standard inline keyboard for the status message."""
-        keyboard = [
+    def _get_home_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="refresh_status"),
-            ],
+                [InlineKeyboardButton("📊 Portfolio", callback_data="show_status")],
+                [
+                    InlineKeyboardButton("📈 Performance", callback_data="show_history"),
+                    InlineKeyboardButton("🥧 Allocation", callback_data="show_allocation_platform"),
+                ],
+                [InlineKeyboardButton("⚙️ Settings", callback_data="show_settings")],
+            ]
+        )
+
+    def _get_status_keyboard(self, loading: bool = False) -> InlineKeyboardMarkup:
+        refresh = InlineKeyboardButton(
+            "⏳ Refreshing…" if loading else "🔄 Refresh",
+            callback_data="noop" if loading else "refresh_status",
+        )
+        return InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("📈 30-Day Trend", callback_data="show_history"),
-                InlineKeyboardButton("🥧 Allocation", callback_data="show_pie_chart"),
-            ],
-        ]
-        return InlineKeyboardMarkup(keyboard)
+                [refresh, InlineKeyboardButton("⚙️ Settings", callback_data="show_settings")],
+                [
+                    InlineKeyboardButton("📈 Performance", callback_data="show_history"),
+                    InlineKeyboardButton("🥧 Allocation", callback_data="show_allocation_platform"),
+                ],
+            ]
+        )
+
+    def _get_retry_keyboard(self, callback_data: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔄 Try again", callback_data=callback_data)],
+                [InlineKeyboardButton("🏠 Portfolio", callback_data="show_status")],
+            ]
+        )
+
+    def _get_history_keyboard(self, currency: str = "USD") -> InlineKeyboardMarkup:
+        currency = currency.upper()
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "USD ✓" if currency == "USD" else "USD",
+                        callback_data="history_currency_usd",
+                    ),
+                    InlineKeyboardButton(
+                        "RUB ✓" if currency == "RUB" else "RUB",
+                        callback_data="history_currency_rub",
+                    ),
+                ],
+                [InlineKeyboardButton("📅 Daily values", callback_data="show_daily_values")],
+                [
+                    InlineKeyboardButton("🏠 Portfolio", callback_data="show_status"),
+                    InlineKeyboardButton("🥧 Allocation", callback_data="show_allocation_platform"),
+                ],
+            ]
+        )
+
+    def _get_allocation_keyboard(self, grouping: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Platform ✓" if grouping == "platform" else "Platform",
+                        callback_data="show_allocation_platform",
+                    ),
+                    InlineKeyboardButton(
+                        "Asset class ✓" if grouping == "asset_class" else "Asset class",
+                        callback_data="show_allocation_asset",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton("🏠 Portfolio", callback_data="show_status"),
+                    InlineKeyboardButton("📈 Performance", callback_data="show_history"),
+                ],
+            ]
+        )
+
+    def _get_settings_keyboard(self) -> InlineKeyboardMarkup:
+        def label(minutes: int, text: str) -> str:
+            selected = self.scheduled_reports_enabled and self.poll_interval_minutes == minutes
+            return f"{text} ✓" if selected else text
+
+        disabled = "Disabled ✓" if not self.scheduled_reports_enabled else "Disable"
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(label(30, "30 min"), callback_data="schedule_30"),
+                    InlineKeyboardButton(label(60, "1 hour"), callback_data="schedule_60"),
+                ],
+                [
+                    InlineKeyboardButton(label(120, "2 hours"), callback_data="schedule_120"),
+                    InlineKeyboardButton(label(240, "4 hours"), callback_data="schedule_240"),
+                ],
+                [InlineKeyboardButton(disabled, callback_data="schedule_disable")],
+                [InlineKeyboardButton("🏠 Portfolio", callback_data="show_status")],
+            ]
+        )
+
+    def _format_performance_context(self, summary: dict) -> str:
+        if not summary.get("is_complete", True):
+            return ""
+        total_usd, total_rub = self.aggregator.get_totals(summary)
+        metrics = history_manager.get_performance_metrics(total_usd, total_rub)
+        if not metrics:
+            return ""
+
+        lines = ["", "<b>PERFORMANCE</b>"]
+        for metric in metrics:
+            change = metric["usd_change"]
+            arrow = "▲" if change > 0 else "▼" if change < 0 else "•"
+            amount = f"${abs(change):,.0f}".replace(",", " ")
+            percentage = metric["percent_change"]
+            pct = f"{abs(percentage):.1f}%" if percentage is not None else "n/a"
+            lines.append(f"{metric['label']}: <code>{arrow} {amount} ({pct})</code>")
+        return "\n".join(lines)
+
+    def _format_status_message(self, summary: dict, timestamp: bool = True) -> str:
+        message = self.aggregator.format_message(summary)
+        message += self._format_performance_context(summary)
+        if timestamp:
+            now = datetime.now(Config.get_timezone_obj()).strftime("%H:%M:%S")
+            message += f"\n\n<i>Last updated: {now}</i>"
+        return message
+
+    async def _load_status_into_message(self, message, context) -> dict:
+        summary = await self._get_portfolio_summary()
+        text = self._format_status_message(summary)
+        await message.edit_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=self._get_status_keyboard(),
+        )
+        context.chat_data["last_status_html"] = text
+        self._save_snapshot_if_complete(summary)
+        return summary
 
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status — fetch and send current portfolio snapshot."""
@@ -190,219 +362,328 @@ class TelegramBot:
             await update.message.reply_text("Unauthorized access.")
             return
 
-        logger.info(f"/status from {update.effective_chat.id}")
-
-        # Send placeholder — retry on transient network errors so the command
-        # doesn't silently vanish if the connection blips at this exact moment.
+        logger.info("/status from %s", update.effective_chat.id)
         status_msg = None
         for attempt in range(4):
             try:
-                status_msg = await update.message.reply_text("Fetching data...")
+                status_msg = await update.message.reply_text("⏳ Fetching balances…")
                 break
-            except (NetworkError, TimedOut) as e:
+            except (NetworkError, TimedOut) as exc:
                 if attempt == 3:
-                    logger.warning(
-                        f"/status: could not send placeholder after 4 attempts: {e}"
-                    )
+                    logger.warning("/status placeholder failed after 4 attempts: %s", exc)
                     return
-                await asyncio.sleep(2**attempt)  # 1 s, then 2 s
+                await asyncio.sleep(2**attempt)
 
         try:
-            summary = await self._get_portfolio_summary()
-            msg = self.aggregator.format_message(summary)
-            # Add timestamp to show when it was last generated
-            now = datetime.now(Config.get_timezone_obj()).strftime("%H:%M:%S")
-            msg += f"\n\n<i>Last updated: {now}</i>"
-
+            await self._load_status_into_message(status_msg, context)
+        except Exception as exc:
+            logger.error("Error in /status: %s", exc)
             await status_msg.edit_text(
-                text=msg, parse_mode="HTML", reply_markup=self._get_status_keyboard()
+                "⚠️ <b>Could not refresh the portfolio.</b>\nPlease try again.",
+                parse_mode="HTML",
+                reply_markup=self._get_retry_keyboard("show_status"),
             )
 
-            # Save snapshot on manual request
-            self._save_snapshot_if_complete(summary)
-        except Exception as e:
-            logger.error(f"Error in /status: {e}")
-            await status_msg.edit_text("Error fetching status. Check the bot logs.")
+    def _settings_text(self) -> str:
+        if self.scheduled_reports_enabled:
+            schedule = f"Every <b>{self.poll_interval_minutes} minutes</b>"
+        else:
+            schedule = "<b>Disabled</b>"
+        return (
+            "⚙️ <b>Automatic reports</b>\n\n"
+            f"Schedule: {schedule}\n"
+            f"Active window: <b>{Config.WINDOW_START_HOUR:02d}:00–"
+            f"{Config.WINDOW_END_HOUR:02d}:00</b>\n\n"
+            "Choose a preset. This setting is saved across bot restarts."
+        )
 
-    async def frequency_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """Handle /frequency <minutes> — update the scheduled scan interval."""
+    async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
             await update.message.reply_text("Unauthorized access.")
             return
+        await update.message.reply_text(
+            self._settings_text(),
+            parse_mode="HTML",
+            reply_markup=self._get_settings_keyboard(),
+        )
 
-        args = context.args
-        if not args or len(args) != 1:
-            await update.message.reply_text(
-                "Usage: /frequency <minutes>\nExample: /frequency 60"
-            )
+    async def frequency_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle legacy /frequency while steering users toward preset buttons."""
+        if not self._is_authorized(update):
+            await update.message.reply_text("Unauthorized access.")
             return
-
+        if not context.args:
+            await self.settings_command(update, context)
+            return
         try:
-            minutes = int(args[0])
-            if minutes < 1:
-                raise ValueError("Must be >= 1")
+            minutes = int(context.args[0])
+            if len(context.args) != 1 or minutes < 1:
+                raise ValueError
         except ValueError:
             await update.message.reply_text(
-                "❌ Invalid value. Please provide a positive integer.\nExample: /frequency 60"
+                "❌ Enter one positive number, or use /settings for presets."
             )
             return
 
-        self.poll_interval_minutes = minutes
-        self._schedule_job()
-
-        tz = Config.get_timezone_obj()
-        next_dt = datetime.now(tz) + timedelta(seconds=self._seconds_until_next_slot())
-        logger.info(f"/frequency set to {minutes} min by {update.effective_chat.id}")
+        self._set_schedule(minutes, True)
         await update.message.reply_text(
-            f"✅ Frequency updated to every <b>{minutes} minute(s)</b>.\n"
-            f"Next snapshot at <b>{next_dt.strftime('%H:%M')}</b> "
-            f"(anchored to {Config.WINDOW_START_HOUR:02d}:00).",
+            f"✅ Automatic reports set to every <b>{minutes} minutes</b>.",
             parse_mode="HTML",
+            reply_markup=self._get_settings_keyboard(),
         )
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help — list all available commands."""
         if not self._is_authorized(update):
             await update.message.reply_text("Unauthorized access.")
             return
-
         msg = (
             "📋 <b>Available commands</b>\n\n"
-            "/status — fetch the current portfolio snapshot\n"
-            "/frequency &lt;minutes&gt; — set how often the bot sends automatic snapshots "
-            f"(current: every {self.poll_interval_minutes} min, anchored to "
-            f"{Config.WINDOW_START_HOUR:02d}:00)\n"
-            "/history — view portfolio values for the last 30 days + trend chart\n"
-            "/rub_chart — send the last 30 days trend chart in RUB\n"
-            "/pie_chart — send a pie chart of current allocation by platform\n"
-            "/export — download raw portfolio history as a JSON file\n"
-            "/help — show this help message"
+            "/status — current portfolio snapshot\n"
+            "/history — performance chart and daily values\n"
+            "/allocation — allocation by platform or asset class\n"
+            "/settings — automatic report presets\n"
+            "/export — download raw portfolio history\n"
+            "/frequency &lt;minutes&gt; — set a custom interval\n"
+            "/help — show this message"
         )
-        await update.message.reply_text(msg, parse_mode="HTML")
+        await update.message.reply_text(
+            msg, parse_mode="HTML", reply_markup=self._get_home_keyboard()
+        )
+
+    def _history_caption(self, entries: list[dict], currency: str) -> str:
+        currency = currency.upper()
+        symbol = "$" if currency == "USD" else "₽"
+        newest = entries[0]
+        chronological = list(reversed(entries))
+        current = float(newest[currency])
+        first = float(chronological[0][currency])
+        values = [float(entry[currency]) for entry in entries]
+        fmt = lambda value: f"{symbol}{value:,.0f}".replace(",", " ")
+
+        latest_date = datetime.strptime(newest["date"], "%d-%m-%Y")
+        dated_entries = [
+            (datetime.strptime(entry["date"], "%d-%m-%Y"), entry)
+            for entry in entries
+        ]
+
+        def change_line(label: str, baseline_value: float) -> str:
+            change = current - baseline_value
+            percentage = change / baseline_value * 100 if baseline_value else 0.0
+            arrow = "▲" if change > 0 else "▼" if change < 0 else "•"
+            return (
+                f"{label}: <code>{arrow} {fmt(abs(change))} "
+                f"({abs(percentage):.1f}%)</code>"
+            )
+
+        lines = [
+            f"📈 <b>Portfolio performance · {currency}</b>",
+            "",
+            f"Current: <code>{fmt(current)}</code>",
+        ]
+        for label, days in (("7D", 7), ("30D", 30)):
+            target = latest_date - timedelta(days=days)
+            candidates = [item for item in dated_entries if item[0] <= target]
+            if candidates:
+                _, baseline = max(candidates, key=lambda item: item[0])
+                lines.append(change_line(label, float(baseline[currency])))
+
+        if len(lines) == 3:
+            lines.append(change_line("Period", first))
+        lines.extend(
+            [
+                f"Range: <code>{fmt(min(values))}–{fmt(max(values))}</code>",
+                f"{chronological[0]['date']} → {newest['date']}",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _daily_values_text(self, entries: list[dict]) -> str:
+        lines = ["📅 <b>Daily portfolio values</b>", ""]
+        for entry in entries:
+            usd = f"${entry['USD']:,.0f}".replace(",", " ")
+            rub = f"₽{entry['RUB']:,.0f}".replace(",", " ")
+            lines.append(f"<b>{entry['date']}</b>  <code>{usd}</code> · <code>{rub}</code>")
+        return "\n".join(lines)
+
+    async def _replace_query_with_photo(
+        self, query, buffer, caption: str, reply_markup: InlineKeyboardMarkup, filename: str
+    ):
+        if query.message.photo:
+            media = InputMediaPhoto(
+                media=InputFile(buffer, filename=filename),
+                caption=caption,
+                parse_mode="HTML",
+            )
+            return await query.edit_message_media(media=media, reply_markup=reply_markup)
+
+        chat_id = query.message.chat_id
+        try:
+            await query.message.delete()
+        except Exception as exc:
+            logger.debug("Could not delete previous navigation message: %s", exc)
+        return await query.get_bot().send_photo(
+            chat_id=chat_id,
+            photo=InputFile(buffer, filename=filename),
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+    async def _replace_query_with_text(
+        self, query, text: str, reply_markup: InlineKeyboardMarkup | None = None
+    ):
+        if not query.message.photo:
+            return await query.edit_message_text(
+                text=text, parse_mode="HTML", reply_markup=reply_markup
+            )
+        chat_id = query.message.chat_id
+        try:
+            await query.message.delete()
+        except Exception as exc:
+            logger.debug("Could not delete previous navigation message: %s", exc)
+        return await query.get_bot().send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+    async def _set_query_progress(self, query, text: str) -> None:
+        if query.message.photo:
+            await query.edit_message_caption(caption=text)
+        else:
+            await query.edit_message_text(text=text)
+
+    async def _send_history_screen(self, message, currency: str = "USD") -> None:
+        progress = await message.reply_text("⏳ Building performance chart…")
+        entries = history_manager.get_history(30)
+        if not entries:
+            await progress.edit_text(
+                "No portfolio history recorded yet. Data is saved after a complete snapshot."
+            )
+            return
+        try:
+            color = "#4A90D9" if currency == "USD" else "#D64541"
+            buffer = await asyncio.to_thread(
+                chart_module.build_portfolio_chart, entries, currency, color
+            )
+            await progress.delete()
+            await message.reply_photo(
+                photo=InputFile(buffer, filename=f"portfolio_{currency.lower()}.png"),
+                caption=self._history_caption(entries, currency),
+                parse_mode="HTML",
+                reply_markup=self._get_history_keyboard(currency),
+            )
+        except Exception as exc:
+            logger.error("History chart failed: %s", exc)
+            await progress.edit_text(
+                "⚠️ <b>Could not build the performance chart.</b>",
+                parse_mode="HTML",
+                reply_markup=self._get_retry_keyboard("show_history"),
+            )
+
+    async def _show_history_callback(self, query, currency: str = "USD") -> None:
+        entries = history_manager.get_history(30)
+        if not entries:
+            await self._replace_query_with_text(
+                query,
+                "No portfolio history recorded yet. Data is saved after a complete snapshot.",
+                self._get_retry_keyboard("show_status"),
+            )
+            return
+        try:
+            await self._set_query_progress(query, "⏳ Building performance chart…")
+            color = "#4A90D9" if currency == "USD" else "#D64541"
+            buffer = await asyncio.to_thread(
+                chart_module.build_portfolio_chart, entries, currency, color
+            )
+            await self._replace_query_with_photo(
+                query,
+                buffer,
+                self._history_caption(entries, currency),
+                self._get_history_keyboard(currency),
+                f"portfolio_{currency.lower()}.png",
+            )
+        except Exception as exc:
+            logger.error("History chart failed: %s", exc)
+            await self._replace_query_with_text(
+                query,
+                "⚠️ <b>Could not build the performance chart.</b>",
+                self._get_retry_keyboard("show_history"),
+            )
 
     async def history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /history — show portfolio snapshots for the last 30 days."""
         if not self._is_authorized(update):
             await update.message.reply_text("Unauthorized access.")
             return
+        await self._send_history_screen(update.message, "USD")
 
-        await self._send_history(update.message.reply_text, update.message.reply_photo)
-
-    async def _send_history(self, reply_text, reply_photo):
-        """Internal logic for sending history, usable by both commands and callbacks."""
-        entries = history_manager.get_history(30)
-        if not entries:
-            await reply_text(
-                "No portfolio history recorded yet. "
-                "Data is saved automatically on each scheduled snapshot."
-            )
-            return
-
-        # --- Text summary ---
-        lines = ["📅 <b>Portfolio history (last 30 days)</b>\n"]
-        for e in entries:
-            usd_fmt = f"${e['USD']:,.0f}".replace(",", " ")
-            rub_fmt = f"₽{e['RUB']:,.0f}".replace(",", " ")
-            lines.append(
-                f"<b>{e['date']}</b>  <code>{usd_fmt}</code> => <code>{rub_fmt}</code>"
-            )
-
-        await reply_text("\n".join(lines), parse_mode="HTML")
-
-        # --- Trend chart image ---
-        try:
-            buf = await asyncio.to_thread(chart_module.build_portfolio_chart, entries)
-            await reply_photo(
-                photo=buf,
-                caption="📈 Portfolio USD trend",
-            )
-        except RuntimeError as e:
-            logger.warning(f"Chart skipped (matplotlib unavailable): {e}")
-        except (TimedOut, NetworkError) as e:
-            logger.warning(
-                f"Telegram network error while sending chart (photo may still arrive): {e}"
-            )
-        except Exception as e:
-            logger.error(f"Chart generation failed: {e}")
-            await reply_text("⚠️ Could not generate chart.")
-
-    async def rub_chart_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """Handle /rub_chart — send the RUB trend chart for the last 30 days."""
+    async def rub_chart_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
             await update.message.reply_text("Unauthorized access.")
             return
+        await self._send_history_screen(update.message, "RUB")
 
-        await self._send_rub_chart(
-            update.message.reply_text, update.message.reply_photo
-        )
+    def _allocation_caption(self, summary: dict, grouping: str) -> str:
+        title = "platform" if grouping == "platform" else "asset class"
+        caption = f"🥧 <b>Portfolio allocation by {title}</b>"
+        if not summary.get("is_complete", True):
+            caption += "\n⚠️ Based on partial data; unavailable sources are excluded."
+        return caption
 
-    async def _send_rub_chart(self, reply_text, reply_photo):
-        """Internal logic for sending the RUB chart, usable by commands and callbacks."""
-        entries = history_manager.get_history(30)
-        if not entries:
-            await reply_text(
-                "No portfolio history recorded yet. "
-                "Data is saved automatically on each scheduled snapshot."
-            )
-            return
-
-        try:
-            buf = await asyncio.to_thread(
-                chart_module.build_portfolio_chart,
-                entries,
-                "RUB",
-                "#D64541",
-            )
-            await reply_photo(
-                photo=buf,
-                caption="📈 Portfolio RUB trend",
-            )
-        except RuntimeError as e:
-            logger.warning(f"RUB chart skipped (matplotlib unavailable): {e}")
-        except (TimedOut, NetworkError) as e:
-            logger.warning(
-                f"Telegram network error while sending RUB chart (photo may still arrive): {e}"
-            )
-        except Exception as e:
-            logger.error(f"RUB chart generation failed: {e}")
-            await reply_text("⚠️ Could not generate chart.")
-
-    async def pie_chart_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """Handle /pie_chart — send a pie chart showing allocation by platform."""
-        if not self._is_authorized(update):
-            await update.message.reply_text("Unauthorized access.")
-            return
-
-        await self._send_pie_chart(
-            update.message.reply_text, update.message.reply_photo
-        )
-
-    async def _send_pie_chart(self, reply_text, reply_photo):
-        """Internal logic for sending pie chart, usable by both commands and callbacks."""
-        await reply_text("Generating pie chart…")
+    async def _send_allocation_screen(self, message, context, grouping="platform"):
+        progress = await message.reply_text("⏳ Building allocation chart…")
         try:
             summary = await self._get_portfolio_summary()
-            buf = await asyncio.to_thread(chart_module.build_pie_chart, summary)
-            await reply_photo(
-                photo=buf,
-                caption="🥧 Portfolio allocation by platform",
+            context.chat_data["allocation_summary"] = summary
+            buffer = await asyncio.to_thread(
+                chart_module.build_pie_chart, summary, grouping
             )
-        except RuntimeError as e:
-            logger.warning(f"Pie chart skipped (matplotlib unavailable): {e}")
-            await reply_text("⚠️ matplotlib is not installed.")
-        except ValueError as e:
-            await reply_text(f"⚠️ {e}")
-        except (TimedOut, NetworkError) as e:
-            logger.warning(f"Telegram network error sending pie chart: {e}")
-        except Exception as e:
-            logger.error(f"Pie chart generation failed: {e}")
-            await reply_text("⚠️ Could not generate pie chart.")
+            await progress.delete()
+            await message.reply_photo(
+                photo=InputFile(buffer, filename="portfolio_allocation.png"),
+                caption=self._allocation_caption(summary, grouping),
+                parse_mode="HTML",
+                reply_markup=self._get_allocation_keyboard(grouping),
+            )
+        except Exception as exc:
+            logger.error("Allocation chart failed: %s", exc)
+            await progress.edit_text(
+                "⚠️ <b>Could not build the allocation chart.</b>",
+                parse_mode="HTML",
+                reply_markup=self._get_retry_keyboard("show_allocation_platform"),
+            )
+
+    async def _show_allocation_callback(self, query, context, grouping="platform"):
+        try:
+            await self._set_query_progress(query, "⏳ Building allocation chart…")
+            summary = context.chat_data.get("allocation_summary")
+            if summary is None:
+                summary = await self._get_portfolio_summary()
+                context.chat_data["allocation_summary"] = summary
+            buffer = await asyncio.to_thread(
+                chart_module.build_pie_chart, summary, grouping
+            )
+            await self._replace_query_with_photo(
+                query,
+                buffer,
+                self._allocation_caption(summary, grouping),
+                self._get_allocation_keyboard(grouping),
+                "portfolio_allocation.png",
+            )
+        except Exception as exc:
+            logger.error("Allocation chart failed: %s", exc)
+            await self._replace_query_with_text(
+                query,
+                "⚠️ <b>Could not build the allocation chart.</b>",
+                self._get_retry_keyboard("show_allocation_platform"),
+            )
+
+    async def pie_chart_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update):
+            await update.message.reply_text("Unauthorized access.")
+            return
+        await self._send_allocation_screen(update.message, context)
 
     async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export — send portfolio_history.json as a file attachment."""
@@ -432,57 +713,111 @@ class TelegramBot:
         """Handle button clicks from inline keyboards."""
         query = update.callback_query
 
-        # We must answer the callback query, even if empty, or the button will show a loading spinner
         if not self._is_authorized(update):
             await query.answer("Unauthorized.", show_alert=True)
             return
 
         data = query.data
+        await query.answer("Refreshing…" if data == "refresh_status" else None)
+
+        if data == "noop":
+            return
 
         if data == "refresh_status":
-            await query.answer("Refreshing data...")
+            previous_text = context.chat_data.get("last_status_html")
+            if previous_text is None and query.message.text:
+                previous_text = query.message.text_html
+            await query.edit_message_reply_markup(
+                reply_markup=self._get_status_keyboard(loading=True)
+            )
             try:
                 summary = await self._get_portfolio_summary()
-                msg = self.aggregator.format_message(summary)
-                now = datetime.now(Config.get_timezone_obj()).strftime("%H:%M:%S")
-                msg += f"\n\n<i>Last updated: {now}</i>"
-
+                msg = self._format_status_message(summary)
                 await query.edit_message_text(
                     text=msg,
                     parse_mode="HTML",
                     reply_markup=self._get_status_keyboard(),
                 )
-
-                # Save snapshot on manual refresh
+                context.chat_data["last_status_html"] = msg
+                context.chat_data.pop("allocation_summary", None)
                 self._save_snapshot_if_complete(summary)
-            except Exception as e:
-                logger.error(f"Error refreshing status via callback: {e}")
-                # We append the error so they know it failed, but keep the keyboard so they can try again later
-                error_msg = "<b>⚠️ Error refreshing data. Check the bot logs.</b>"
-                # If they quickly click refresh twice and the text is identical, Telegram throws a BadRequest.
-                # Adding the exact time prevents identical texts.
-                import time
-
-                try:
-                    await query.edit_message_text(
-                        text=error_msg
-                        + f"\n<i>Failed at {time.strftime('%H:%M:%S')}</i>",
-                        parse_mode="HTML",
-                        reply_markup=self._get_status_keyboard(),
+            except Exception as exc:
+                logger.error("Error refreshing status via callback: %s", exc)
+                if previous_text:
+                    error_text = (
+                        previous_text
+                        + "\n\n⚠️ <b>Refresh failed.</b> Previous values are shown."
                     )
-                except Exception:
-                    pass
+                else:
+                    error_text = "⚠️ <b>Could not refresh the portfolio.</b>"
+                await query.edit_message_text(
+                    text=error_text,
+                    parse_mode="HTML",
+                    reply_markup=self._get_retry_keyboard("refresh_status"),
+                )
 
-        elif data == "show_history":
-            await query.answer()
-            await self._send_history(
-                query.message.reply_text, query.message.reply_photo
+        elif data == "show_status":
+            loading_message = await self._replace_query_with_text(
+                query,
+                "⏳ Fetching balances…",
+                None,
+            )
+            try:
+                await self._load_status_into_message(loading_message, context)
+                context.chat_data.pop("allocation_summary", None)
+            except Exception as exc:
+                logger.error("Could not open portfolio view: %s", exc)
+                await loading_message.edit_text(
+                    "⚠️ <b>Could not refresh the portfolio.</b>",
+                    parse_mode="HTML",
+                    reply_markup=self._get_retry_keyboard("show_status"),
+                )
+
+        elif data in {"show_history", "history_currency_usd"}:
+            await self._show_history_callback(query, "USD")
+
+        elif data == "history_currency_rub":
+            await self._show_history_callback(query, "RUB")
+
+        elif data == "show_daily_values":
+            entries = history_manager.get_history(30)
+            if entries:
+                await self._replace_query_with_text(
+                    query,
+                    self._daily_values_text(entries),
+                    InlineKeyboardMarkup(
+                        [
+                            [InlineKeyboardButton("📈 Back to chart", callback_data="show_history")],
+                            [InlineKeyboardButton("🏠 Portfolio", callback_data="show_status")],
+                        ]
+                    ),
+                )
+            else:
+                await self._replace_query_with_text(
+                    query,
+                    "No portfolio history recorded yet.",
+                    self._get_retry_keyboard("show_status"),
+                )
+
+        elif data in {"show_pie_chart", "show_allocation_platform"}:
+            await self._show_allocation_callback(query, context, "platform")
+
+        elif data == "show_allocation_asset":
+            await self._show_allocation_callback(query, context, "asset_class")
+
+        elif data == "show_settings":
+            await self._replace_query_with_text(
+                query, self._settings_text(), self._get_settings_keyboard()
             )
 
-        elif data == "show_pie_chart":
-            await query.answer()
-            await self._send_pie_chart(
-                query.message.reply_text, query.message.reply_photo
+        elif data.startswith("schedule_"):
+            if data == "schedule_disable":
+                self._set_schedule(self.poll_interval_minutes, False)
+            else:
+                minutes = int(data.removeprefix("schedule_"))
+                self._set_schedule(minutes, True)
+            await self._replace_query_with_text(
+                query, self._settings_text(), self._get_settings_keyboard()
             )
 
     # ------------------------------------------------------------------
@@ -500,7 +835,7 @@ class TelegramBot:
         logger.info("Running scheduled report...")
         try:
             summary = await self._get_portfolio_summary()
-            msg = self.aggregator.format_message(summary)
+            msg = self._format_status_message(summary, timestamp=False)
             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
             logger.info("Scheduled report sent.")
 

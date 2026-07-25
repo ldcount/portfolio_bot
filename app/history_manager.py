@@ -76,3 +76,53 @@ def get_history(days: int = 30) -> list[dict]:
         {"date": key, "USD": vals.get("USD", 0.0), "RUB": vals.get("RUB", 0.0)}
         for _, key, vals in entries
     ]
+
+
+def get_performance_metrics(
+    current_usd: float, current_rub: float
+) -> list[dict]:
+    """Return 1-day and 7-day changes against the closest available snapshots."""
+    entries = get_history(60)
+    if not entries:
+        return []
+
+    today = datetime.now().date()
+    dated_entries = []
+    for entry in entries:
+        try:
+            entry_date = datetime.strptime(entry["date"], "%d-%m-%Y").date()
+        except (KeyError, ValueError):
+            continue
+        if entry_date < today:
+            dated_entries.append((entry_date, entry))
+
+    metrics = []
+    for label, days_back in (("1D", 1), ("7D", 7)):
+        target = today - timedelta(days=days_back)
+        tolerance_days = 2 if days_back == 1 else 4
+        earliest_acceptable = target - timedelta(days=tolerance_days)
+        candidates = [
+            item
+            for item in dated_entries
+            if earliest_acceptable <= item[0] <= target
+        ]
+        if not candidates:
+            continue
+
+        baseline_date, baseline = max(candidates, key=lambda item: item[0])
+        usd_change = current_usd - float(baseline.get("USD", 0.0))
+        rub_change = current_rub - float(baseline.get("RUB", 0.0))
+        baseline_usd = float(baseline.get("USD", 0.0))
+        metrics.append(
+            {
+                "label": label,
+                "baseline_date": baseline_date.strftime("%d-%m-%Y"),
+                "usd_change": usd_change,
+                "rub_change": rub_change,
+                "percent_change": (
+                    usd_change / baseline_usd * 100 if baseline_usd else None
+                ),
+            }
+        )
+
+    return metrics
