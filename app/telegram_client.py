@@ -510,7 +510,9 @@ class TelegramBot:
     ):
         if query.message.photo:
             media = InputMediaPhoto(
-                media=InputFile(buffer, filename=filename),
+                # editMessageMedia embeds the file reference inside JSON, so the
+                # multipart upload must be addressed via an attach:// URI.
+                media=InputFile(buffer, filename=filename, attach=True),
                 caption=caption,
                 parse_mode="HTML",
             )

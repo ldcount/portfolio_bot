@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import logging
 import os
@@ -359,6 +360,24 @@ class AsyncAggregationTests(unittest.IsolatedAsyncioTestCase):
             [command.command for command in commands],
             ["status", "history", "allocation", "settings", "export", "help"],
         )
+
+    async def test_replacing_chart_photo_uses_multipart_attachment_uri(self):
+        bot = TelegramBot.__new__(TelegramBot)
+        query = Mock()
+        query.message.photo = [Mock()]
+        query.edit_message_media = AsyncMock()
+
+        await bot._replace_query_with_photo(
+            query,
+            io.BytesIO(b"fake-png"),
+            "Chart caption",
+            bot._get_history_keyboard("RUB"),
+            "portfolio_rub.png",
+        )
+
+        media = query.edit_message_media.await_args.kwargs["media"]
+        self.assertTrue(media.media.attach_uri.startswith("attach://"))
+        self.assertIsNotNone(media.media.attach_name)
 
 
 class StatusPerformanceTests(unittest.TestCase):
