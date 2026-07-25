@@ -9,10 +9,16 @@ class RedactionFilter(logging.Filter):
         self.patterns = patterns or []
 
     def filter(self, record):
-        if not isinstance(record.msg, str):
+        try:
+            message = record.getMessage()
+        except Exception:
             return True
+
         for pattern in self.patterns:
-            record.msg = re.sub(pattern, "[REDACTED]", record.msg)
+            message = re.sub(pattern, "[REDACTED]", message)
+
+        record.msg = message
+        record.args = ()
         return True
 
 
@@ -27,6 +33,12 @@ def setup_logging():
         Config.OKX_API_KEY,
         Config.OKX_API_SECRET,
         Config.OKX_API_PASSPHRASE,
+        Config.KUCOIN_API_KEY,
+        Config.KUCOIN_API_SECRET,
+        Config.KUCOIN_API_PASSPHRASE,
+        Config.TBANK_API_TOKEN,
+        Config.IBKR_FLEX_TOKEN,
+        Config.IBKR_QUERY_ID,
     ]
     # Filter out None values
     secrets = [s for s in secrets if s]

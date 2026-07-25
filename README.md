@@ -1,10 +1,11 @@
-# Telegram Portfolio Bot (Bybit + OKX + T‑Bank + IBKR Flex)
+# Telegram Portfolio Bot (Bybit + OKX + KuCoin + T‑Bank + IBKR Flex)
 
 This project is a Telegram bot that sends your portfolio snapshot on a schedule.
 
 It pulls balances from:
 - **Bybit** (USD equity)
-- **OKX** (USD equity)
+- **OKX** (trading, funding, and Earn valuation)
+- **KuCoin** (funding/main, trading, margin, and futures wallets)
 - **T‑Bank / T‑Invest** (RUB total portfolio, converted to USD)
 - **IBKR** via **Flex Web Service** (USD total/NAV from a Flex query)
 
@@ -81,6 +82,9 @@ Create a `.env` file in the project root. All settings are loaded from environme
 ### Optional / recommended
 
 - `TBANK_API_TOKEN` — T‑Bank read-only token.
+- `KUCOIN_API_KEY` — optional KuCoin API key.
+- `KUCOIN_API_SECRET` — optional KuCoin API secret.
+- `KUCOIN_API_PASSPHRASE` — optional KuCoin API passphrase.
 - `IBKR_FLEX_TOKEN` — IBKR Flex Web Service token.
 - `IBKR_QUERY_ID` — ID of your saved Flex query.
 - `TIMEZONE` (default: `Europe/Paris`)

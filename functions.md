@@ -25,9 +25,9 @@
 - `BybitClient.get_balance_usd()`: Connects to ByBit via `pybit`. Fetches the Unified Trading Account wallet balance and returns the total equity in USD.
 
 ### `okx_client.py`
-- `OkxClient.get_balance_usd()`: Connects to OKX via `okx-sdk`. Fetches the account balance (`get_balance`) and extracts the total equity (`totalEq`) in USD.
+- `OkxClient.get_balance_usd()`: Connects to OKX via `okx-sdk`. Fetches the total asset valuation (`totalBal`) in USD across trading, funding, and Earn.
 
 ### `kucoin_client.py`
 - `KucoinClient.__init__()`: Initializes the KuCoin client with credentials.
 - `KucoinClient._get_headers(method, endpoint, body_str)`: Generates signed authentication headers required by the KuCoin API (HMAC-SHA256 signature and encrypted passphrase).
-- `KucoinClient.get_balance_usd()`: Queries classic account balances (funding, spot, margin) and futures account equity, converts all non-USD assets to USD using current token prices, and returns the grand total in USD.
+- `KucoinClient.get_balance_usd()`: Queries classic balances (funding/main, trading, and margin), discovers futures settlement currencies, fetches each futures wallet with a correctly signed currency query, and converts the combined equity to USD.

@@ -1,5 +1,5 @@
 import logging
-from okx.restapi.Account import AccountClient
+from okx.restapi.Funding import FundingClient
 from app.config import Config
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class OkxClient:
 
         if self.api_key and self.api_secret and self.passphrase:
             try:
-                self.client = AccountClient(
+                self.client = FundingClient(
                     apikey=self.api_key,
                     apisecret=self.api_secret,
                     passphrase=self.passphrase,
@@ -31,17 +31,14 @@ class OkxClient:
 
     def get_balance_usd(self) -> float:
         """
-        Fetches the total equity in USD from the OKX Account.
+        Fetch the total OKX valuation in USD across trading, funding, and Earn.
         """
         if not self.client:
             logger.error("OKX client not initialized.")
             raise RuntimeError("OKX client not initialized")
 
         try:
-            # Get Balance
-            result = self.client.get_balance()
-
-            # result example: {'code': '0', 'data': [{'totalEq': '...', ...}], 'msg': ''}
+            result = self.client.get_asset_valuation(ccy="USD")
 
             code = result.get("code")
             if code != "0":
@@ -54,9 +51,10 @@ class OkxClient:
                 logger.warning("OKX: No data found in balance response.")
                 return 0.0
 
-            # data[0] contains the account overview
-            # totalEq: Total equity in USD
-            total_equity = data[0].get("totalEq", 0.0)
+            # totalBal includes trading, funding, and Earn account valuations.
+            total_equity = data[0].get("totalBal")
+            if total_equity in (None, ""):
+                raise RuntimeError("OKX asset valuation response missing totalBal")
 
             return float(total_equity)
 

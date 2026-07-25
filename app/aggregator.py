@@ -1,4 +1,5 @@
 import logging
+from html import escape
 from app.config import Config
 from app.platforms.bybit_client import BybitClient
 from app.platforms.okx_client import OkxClient
@@ -28,6 +29,7 @@ class Aggregator:
             "ibkr_usd": 0.0,
             "crypto_usd": 0.0,
             "errors": {},
+            "is_complete": True,
         }
 
         # ByBit
@@ -82,6 +84,7 @@ class Aggregator:
         summary["crypto_usd"] = (
             summary["bybit_usd"] + summary["okx_usd"] + summary["kucoin_usd"]
         )
+        summary["is_complete"] = not bool(summary["errors"])
 
         return summary
 
@@ -131,9 +134,12 @@ class Aggregator:
         tbank_accounts = summary.get("tbank_accounts", [])
         if tbank_accounts:
             for acc in tbank_accounts:
-                lines.append(f"{acc['name']}: <code>{fmt(acc['rub'], 'RUB')}</code>")
+                lines.append(
+                    f"{escape(str(acc['name']))}: "
+                    f"<code>{fmt(acc['rub'], 'RUB')}</code>"
+                )
         if "tbank" in summary["errors"]:
-            lines.append(f"⚠️ ERROR: {summary['errors']['tbank']}")
+            lines.append("⚠️ ERROR: T-Bank data unavailable")
 
         lines.append("Total T-BANK")
         lines.append(f"RUB: <code>{fmt(tbank_rub_val, 'RUB')}</code>")
@@ -165,13 +171,17 @@ class Aggregator:
             lines.append("<b>STOCKS USD</b>")
             ibkr_line = f"IBKR: <code>{fmt(ibkr_usd, 'USD')}</code>"
             if "ibkr" in summary["errors"]:
-                ibkr_line += f" (ERROR: {summary['errors']['ibkr']})"
+                ibkr_line += " (ERROR)"
             lines.append(ibkr_line)
             lines.append("")
 
         lines.append(f"<b>TOTAL</b>")
         lines.append(f"USD: <code>{fmt(grand_total_usd, 'USD')}</code>")
         lines.append(f"RUB: <code>{fmt(grand_total_rub, 'RUB')}</code>")
+
+        if not summary.get("is_complete", True):
+            lines.append("")
+            lines.append("⚠️ <b>Partial data — history was not saved.</b>")
 
         return "\n".join(lines)
 

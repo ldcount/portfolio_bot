@@ -94,26 +94,51 @@ class IBKRClient:
                 return result
             except (ConnectionError, Timeout, OSError) as e:
                 last_error = e
+                safe_error = self._safe_exception_message(e, "IBKR network request")
                 if attempt < 2:
                     wait = 2 ** (attempt + 1)  # 2 s, then 4 s
                     logger.warning(
-                        f"IBKR network error (attempt {attempt + 1}/3), retrying in {wait}s: {e}"
+                        "IBKR network error (attempt %s/3), retrying in %ss: %s",
+                        attempt + 1,
+                        wait,
+                        safe_error,
                     )
                     time.sleep(wait)
             except Exception as e:
                 # Non-retryable error (e.g. bad XML, HTTP 4xx) — fail immediately
-                logger.error(f"IBKR Flex Query Error: {e}")
-                return {"total_usd": 0.0, "error": str(e)}
+                safe_error = self._safe_exception_message(e, "IBKR Flex query")
+                logger.error("IBKR Flex Query Error: %s", safe_error)
+                return {"total_usd": 0.0, "error": safe_error}
 
-        logger.error(f"IBKR: all 3 attempts failed: {last_error}")
+        safe_error = self._safe_exception_message(
+            last_error, "IBKR network request"
+        )
+        logger.error("IBKR: all 3 attempts failed: %s", safe_error)
         if cached:
             logger.warning("Falling back to cached IBKR Flex result after fetch failure.")
             return {
                 "total_usd": cached.get("total_usd", 0.0),
                 "report_date": cached.get("report_date"),
-                "error": f"Using cached IBKR data after fetch failure: {last_error}",
+                "error": f"Using cached IBKR data after fetch failure: {safe_error}",
             }
-        return {"total_usd": 0.0, "error": str(last_error)}
+        return {"total_usd": 0.0, "error": safe_error}
+
+    @staticmethod
+    def _safe_exception_message(error: Exception | None, operation: str) -> str:
+        """Describe a request failure without exposing its URL or credentials."""
+        if error is None:
+            return f"{operation} failed"
+
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None:
+            return f"{operation} failed with HTTP {status_code}"
+
+        if isinstance(error, Timeout):
+            return f"{operation} timed out"
+        if isinstance(error, (ConnectionError, OSError)):
+            return f"{operation} failed due to a network error"
+        return f"{operation} failed ({type(error).__name__})"
 
     def _load_cache(self) -> dict | None:
         if not os.path.exists(self.cache_file):

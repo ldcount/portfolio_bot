@@ -32,6 +32,7 @@ class TelegramBot:
 
         self.application = Application.builder().token(self.token).build()
         self.aggregator = Aggregator()
+        self._aggregation_lock = asyncio.Lock()
 
         # Current poll interval (minutes) — can be changed at runtime via /frequency
         self.poll_interval_minutes = Config.POLL_INTERVAL_MINUTES
@@ -135,6 +136,24 @@ class TelegramBot:
     def _is_authorized(self, update: Update) -> bool:
         return str(update.effective_chat.id) == str(self.chat_id)
 
+    async def _get_portfolio_summary(self) -> dict:
+        """Run blocking exchange SDKs off the Telegram event loop."""
+        async with self._aggregation_lock:
+            return await asyncio.to_thread(self.aggregator.get_portfolio_summary)
+
+    def _save_snapshot_if_complete(self, summary: dict) -> bool:
+        """Persist history only when every configured platform succeeded."""
+        if not summary.get("is_complete", True):
+            logger.warning(
+                "Skipping portfolio snapshot because one or more platforms failed: %s",
+                ", ".join(sorted(summary.get("errors", {}))),
+            )
+            return False
+
+        usd, rub = self.aggregator.get_totals(summary)
+        history_manager.save_snapshot(usd, rub)
+        return True
+
     # ------------------------------------------------------------------
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start — onboarding experience."""
@@ -189,7 +208,7 @@ class TelegramBot:
                 await asyncio.sleep(2**attempt)  # 1 s, then 2 s
 
         try:
-            summary = self.aggregator.get_portfolio_summary()
+            summary = await self._get_portfolio_summary()
             msg = self.aggregator.format_message(summary)
             # Add timestamp to show when it was last generated
             now = datetime.now(Config.get_timezone_obj()).strftime("%H:%M:%S")
@@ -200,11 +219,10 @@ class TelegramBot:
             )
 
             # Save snapshot on manual request
-            usd, rub = self.aggregator.get_totals(summary)
-            history_manager.save_snapshot(usd, rub)
+            self._save_snapshot_if_complete(summary)
         except Exception as e:
             logger.error(f"Error in /status: {e}")
-            await status_msg.edit_text(f"Error fetching status: {e}")
+            await status_msg.edit_text("Error fetching status. Check the bot logs.")
 
     async def frequency_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -369,7 +387,7 @@ class TelegramBot:
         """Internal logic for sending pie chart, usable by both commands and callbacks."""
         await reply_text("Generating pie chart…")
         try:
-            summary = self.aggregator.get_portfolio_summary()
+            summary = await self._get_portfolio_summary()
             buf = await asyncio.to_thread(chart_module.build_pie_chart, summary)
             await reply_photo(
                 photo=buf,
@@ -424,7 +442,7 @@ class TelegramBot:
         if data == "refresh_status":
             await query.answer("Refreshing data...")
             try:
-                summary = self.aggregator.get_portfolio_summary()
+                summary = await self._get_portfolio_summary()
                 msg = self.aggregator.format_message(summary)
                 now = datetime.now(Config.get_timezone_obj()).strftime("%H:%M:%S")
                 msg += f"\n\n<i>Last updated: {now}</i>"
@@ -436,12 +454,11 @@ class TelegramBot:
                 )
 
                 # Save snapshot on manual refresh
-                usd, rub = self.aggregator.get_totals(summary)
-                history_manager.save_snapshot(usd, rub)
+                self._save_snapshot_if_complete(summary)
             except Exception as e:
                 logger.error(f"Error refreshing status via callback: {e}")
                 # We append the error so they know it failed, but keep the keyboard so they can try again later
-                error_msg = f"<b>⚠️ Error refreshing data: {e}</b>"
+                error_msg = "<b>⚠️ Error refreshing data. Check the bot logs.</b>"
                 # If they quickly click refresh twice and the text is identical, Telegram throws a BadRequest.
                 # Adding the exact time prevents identical texts.
                 import time
@@ -482,14 +499,13 @@ class TelegramBot:
         chat_id = context.job.chat_id
         logger.info("Running scheduled report...")
         try:
-            summary = self.aggregator.get_portfolio_summary()
+            summary = await self._get_portfolio_summary()
             msg = self.aggregator.format_message(summary)
             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
             logger.info("Scheduled report sent.")
 
             # Save today's snapshot (overwrites — last run of day wins)
-            usd, rub = self.aggregator.get_totals(summary)
-            history_manager.save_snapshot(usd, rub)
+            self._save_snapshot_if_complete(summary)
         except Exception as e:
             logger.error(f"Error in scheduled job: {e}")
 
