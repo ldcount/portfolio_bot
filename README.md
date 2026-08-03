@@ -130,6 +130,7 @@ OKX_API_PASSPHRASE=replace_with_okx_api_passphrase
 
 # T-Bank (optional)
 TBANK_API_TOKEN=replace_with_tbank_token
+TBANK_API_TARGET=invest-public-api.tbank.ru
 
 # IBKR Flex (optional)
 IBKR_FLEX_TOKEN=replace_with_ibkr_flex_token

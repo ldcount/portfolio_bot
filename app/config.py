@@ -36,6 +36,9 @@ class Config:
 
     # T-Bank
     TBANK_API_TOKEN = os.getenv("TBANK_API_TOKEN")
+    TBANK_API_TARGET = os.getenv(
+        "TBANK_API_TARGET", "invest-public-api.tbank.ru"
+    )
 
     # IBKR (Flex Query)
     IBKR_FLEX_TOKEN = os.getenv("IBKR_FLEX_TOKEN")

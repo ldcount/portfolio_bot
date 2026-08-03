@@ -16,6 +16,7 @@ from app.config import Config
 from app.platforms.ibkr_client import IBKRClient
 from app.platforms.kucoin_client import KucoinClient
 from app.platforms.okx_client import OkxClient
+from app.platforms.tbank_client import TBankClient
 from app.telegram_client import TelegramBot
 from app import chart as chart_module
 from app import history_manager, settings_manager
@@ -127,6 +128,27 @@ class OkxClientTests(unittest.TestCase):
 
         self.assertEqual(client.get_balance_usd(), 9123.45)
         sdk.get_asset_valuation.assert_called_once_with(ccy="USD")
+
+
+class TBankClientTests(unittest.TestCase):
+    @patch("app.platforms.tbank_client.Client")
+    def test_uses_current_tbank_api_endpoint(self, client_class):
+        sdk = client_class.return_value.__enter__.return_value
+        sdk.users.get_accounts.return_value.accounts = []
+
+        with (
+            patch.object(Config, "TBANK_API_TOKEN", "token"),
+            patch.object(
+                Config, "TBANK_API_TARGET", "invest-public-api.tbank.ru"
+            ),
+            patch.object(TBankClient, "_get_usd_rub_rate", return_value=90.0),
+        ):
+            result = TBankClient().get_portfolio_summary()
+
+        client_class.assert_called_once_with(
+            "token", target="invest-public-api.tbank.ru"
+        )
+        self.assertNotIn("error", result)
 
 
 class ErrorSanitizationTests(unittest.TestCase):
