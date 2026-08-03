@@ -67,7 +67,7 @@ class TBankClient:
         accounts_list = []
 
         try:
-            with Client(self.token) as client:
+            with Client(self.token, target=Config.TBANK_API_TARGET) as client:
                 # 1. Get Accounts
                 users: UsersService = client.users
                 accounts = users.get_accounts().accounts
