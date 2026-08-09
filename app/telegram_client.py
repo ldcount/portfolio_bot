@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, time as datetime_time, timedelta
 
 from telegram import (
     BotCommand,
@@ -17,9 +17,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 
 from app.config import Config
 from app.aggregator import Aggregator
+from app.daily_snapshot import build_csv, build_snapshot
 from app import history_manager
 from app import chart as chart_module
 from app import settings_manager
+from app import snapshot_database
+from app.platforms.cbr_fx_client import CBRFXClient
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,14 @@ class TelegramBot:
             Application.builder().token(self.token).post_init(self._post_init).build()
         )
         self.aggregator = Aggregator()
+        self.fx_client = CBRFXClient()
         self._aggregation_lock = asyncio.Lock()
+        self._database_snapshot_lock = asyncio.Lock()
+
+        try:
+            snapshot_database.initialize_database()
+        except Exception as exc:
+            logger.error("Could not initialize the portfolio snapshot database: %s", exc)
 
         persisted_settings = settings_manager.load_settings(
             Config.POLL_INTERVAL_MINUTES
@@ -72,12 +82,14 @@ class TelegramBot:
         )
         self.application.add_handler(CommandHandler("settings", self.settings_command))
         self.application.add_handler(CommandHandler("export", self.export_command))
+        self.application.add_handler(CommandHandler("database", self.database_command))
         self.application.add_handler(CallbackQueryHandler(self.handle_callback))
         self.application.add_error_handler(self.error_handler)
 
         # Add scheduled job
         if self.application.job_queue:
             self._schedule_job()
+            self._schedule_database_job()
         else:
             logger.warning("JobQueue not available.")
 
@@ -93,6 +105,7 @@ class TelegramBot:
             BotCommand("allocation", "Show portfolio allocation"),
             BotCommand("settings", "Change automatic reports"),
             BotCommand("export", "Export portfolio history"),
+            BotCommand("database", "Download daily database history"),
             BotCommand("help", "Show all commands"),
         ]
         await application.bot.set_my_commands(
@@ -164,6 +177,48 @@ class TelegramBot:
         self.poll_interval_minutes = interval_minutes
         self.scheduled_reports_enabled = enabled
         self._schedule_job()
+
+    def _schedule_database_job(self) -> None:
+        """Schedule the independent silent database snapshot and startup catch-up."""
+        if not self.application.job_queue:
+            logger.warning("JobQueue not available; daily database job was not scheduled.")
+            return
+
+        job_queue = self.application.job_queue
+        for job_name in ("daily_database_snapshot", "daily_database_snapshot_catchup"):
+            for job in job_queue.get_jobs_by_name(job_name):
+                job.schedule_removal()
+
+        timezone = Config.get_timezone_obj()
+        snapshot_time = datetime_time(
+            hour=Config.DATABASE_SNAPSHOT_HOUR,
+            minute=0,
+            tzinfo=timezone,
+        )
+        job_queue.run_daily(
+            self.database_snapshot_job,
+            time=snapshot_time,
+            name="daily_database_snapshot",
+        )
+
+        now = datetime.now(timezone)
+        catch_up_due = (
+            now.hour >= Config.DATABASE_SNAPSHOT_HOUR
+            and not snapshot_database.has_snapshot_for_date(now.date())
+        )
+        if catch_up_due:
+            job_queue.run_once(
+                self.database_snapshot_job,
+                when=1,
+                name="daily_database_snapshot_catchup",
+            )
+            logger.info("Scheduled same-day database snapshot catch-up.")
+
+        logger.info(
+            "Daily database snapshot scheduled for %02d:00 %s.",
+            Config.DATABASE_SNAPSHOT_HOUR,
+            Config.TIMEZONE,
+        )
 
     # ------------------------------------------------------------------
     # Global error handler
@@ -443,6 +498,7 @@ class TelegramBot:
             "/allocation — allocation by platform or asset class\n"
             "/settings — automatic report presets\n"
             "/export — download raw portfolio history\n"
+            "/database — download daily database history as CSV\n"
             "/frequency &lt;minutes&gt; — set a custom interval\n"
             "/help — show this message"
         )
@@ -711,6 +767,41 @@ class TelegramBot:
             logger.error(f"Export failed: {e}")
             await update.message.reply_text("⚠️ Could not send history file.")
 
+    async def database_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle /database — send all SQLite snapshots as a semicolon CSV."""
+        if not self._is_authorized(update):
+            await update.message.reply_text("Unauthorized access.")
+            return
+
+        try:
+            rows = await asyncio.to_thread(snapshot_database.get_all_snapshots)
+            if not rows:
+                await update.message.reply_text(
+                    "No daily database snapshots recorded yet. "
+                    f"The first one will be saved at "
+                    f"{Config.DATABASE_SNAPSHOT_HOUR:02d}:00."
+                )
+                return
+
+            csv_buffer = await asyncio.to_thread(build_csv, rows)
+            today = datetime.now(Config.get_timezone_obj()).strftime("%Y-%m-%d")
+            await update.message.reply_document(
+                document=InputFile(
+                    csv_buffer,
+                    filename=f"portfolio_database_{today}.csv",
+                ),
+                caption="Daily portfolio database history",
+            )
+        except (TimedOut, NetworkError) as exc:
+            logger.warning("Telegram network error sending database export: %s", exc)
+        except Exception as exc:
+            logger.error("Database export failed: %s", exc)
+            await update.message.reply_text(
+                "⚠️ Could not send the database history."
+            )
+
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle button clicks from inline keyboards."""
         query = update.callback_query
@@ -823,7 +914,72 @@ class TelegramBot:
             )
 
     # ------------------------------------------------------------------
-    # Scheduled job
+    # Daily database job
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _failed_database_summary(error_message: str) -> dict:
+        errors = {}
+        configured_sources = (
+            ("bybit", bool(Config.BYBIT_API_KEY)),
+            ("okx", bool(Config.OKX_API_KEY)),
+            ("kucoin", bool(Config.KUCOIN_API_KEY)),
+            ("tbank", bool(Config.TBANK_API_TOKEN)),
+            (
+                "ibkr",
+                bool(Config.IBKR_FLEX_TOKEN and Config.IBKR_QUERY_ID),
+            ),
+        )
+        for source, configured in configured_sources:
+            if configured:
+                errors[source] = error_message
+        return {"errors": errors}
+
+    async def database_snapshot_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Silently save one nullable SQLite snapshot for the current local date."""
+        async with self._database_snapshot_lock:
+            now = datetime.now(Config.get_timezone_obj())
+            already_saved = await asyncio.to_thread(
+                snapshot_database.has_snapshot_for_date,
+                now.date(),
+            )
+            if already_saved:
+                logger.info("Database snapshot already exists for %s; skipping.", now.date())
+                return
+
+            try:
+                summary = await self._get_portfolio_summary()
+            except Exception as exc:
+                logger.error("Daily database account scan failed: %s", exc)
+                summary = self._failed_database_summary(type(exc).__name__)
+
+            fx_rates = None
+            try:
+                fx_rates = await asyncio.to_thread(
+                    self.fx_client.get_rates,
+                    now.date(),
+                )
+            except Exception as exc:
+                logger.error(
+                    "Daily database exchange-rate scan failed (%s).",
+                    type(exc).__name__,
+                )
+
+            snapshot = build_snapshot(summary, fx_rates, now)
+            inserted = await asyncio.to_thread(
+                snapshot_database.insert_snapshot,
+                snapshot,
+            )
+            if inserted:
+                logger.info("Daily database snapshot saved for %s.", now.date())
+            else:
+                logger.info(
+                    "Daily database snapshot for %s was already inserted.",
+                    now.date(),
+                )
+
+    # ------------------------------------------------------------------
+    # Existing scheduled Telegram report
     # ------------------------------------------------------------------
 
     async def scheduled_job(self, context: ContextTypes.DEFAULT_TYPE):

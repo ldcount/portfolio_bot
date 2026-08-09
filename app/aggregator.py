@@ -26,6 +26,8 @@ class Aggregator:
             "kucoin_usd": 0.0,
             "tbank_rub": 0.0,
             "tbank_usd": 0.0,
+            "tbank_main_rub": 0.0,
+            "tbank_iis_rub": 0.0,
             "ibkr_usd": 0.0,
             "crypto_usd": 0.0,
             "errors": {},
@@ -65,6 +67,8 @@ class Aggregator:
                 else:
                     summary["tbank_rub"] = tbank_data.get("total_rub", 0.0)
                     summary["tbank_usd"] = tbank_data.get("total_usd", 0.0)
+                    summary["tbank_main_rub"] = tbank_data.get("main_rub", 0.0)
+                    summary["tbank_iis_rub"] = tbank_data.get("iis_rub", 0.0)
                     summary["tbank_accounts"] = tbank_data.get("accounts", [])
             except Exception as e:
                 summary["errors"]["tbank"] = str(e)

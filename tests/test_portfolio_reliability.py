@@ -380,7 +380,15 @@ class AsyncAggregationTests(unittest.IsolatedAsyncioTestCase):
         commands = application.bot.set_my_commands.await_args.args[0]
         self.assertEqual(
             [command.command for command in commands],
-            ["status", "history", "allocation", "settings", "export", "help"],
+            [
+                "status",
+                "history",
+                "allocation",
+                "settings",
+                "export",
+                "database",
+                "help",
+            ],
         )
 
     async def test_replacing_chart_photo_uses_multipart_attachment_uri(self):

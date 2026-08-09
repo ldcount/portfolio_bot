@@ -4,6 +4,7 @@ okx-sdk
 python-telegram-bot
 python-dotenv
 apscheduler
+requests
 websockets
 pytz
 # 1.49.3+ trusts T-Bank's Russian Trusted Root CA and uses the tbank.ru API.

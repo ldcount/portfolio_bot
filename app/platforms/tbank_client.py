@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, List
 from decimal import Decimal
-from t_tech.invest import Client, RequestError
+from t_tech.invest import AccountType, Client, RequestError
 from t_tech.invest.services import (
     InstrumentsService,
     MarketDataService,
@@ -58,12 +58,22 @@ class TBankClient:
         Returns a dictionary with:
         - total_rub: Total portfolio value in RUB
         - total_usd: Total portfolio value in USD (converted)
+        - main_rub: Regular brokerage accounts combined in RUB
+        - iis_rub: IIS accounts combined in RUB
         - accounts: List of per-account dicts [{"name": str, "rub": float}, ...]
         """
         if not self.token:
-            return {"total_rub": 0.0, "total_usd": 0.0, "accounts": []}
+            return {
+                "total_rub": 0.0,
+                "total_usd": 0.0,
+                "main_rub": 0.0,
+                "iis_rub": 0.0,
+                "accounts": [],
+            }
 
         total_rub = 0.0
+        main_rub = 0.0
+        iis_rub = 0.0
         accounts_list = []
 
         try:
@@ -102,6 +112,12 @@ class TBankClient:
                         getattr(account, "name", None)
                         or f"Account {len(accounts_list) + 1}"
                     )
+                    account_type = getattr(account, "type", None)
+                    if account_type == AccountType.ACCOUNT_TYPE_TINKOFF:
+                        main_rub += account_rub
+                    elif account_type == AccountType.ACCOUNT_TYPE_TINKOFF_IIS:
+                        iis_rub += account_rub
+
                     # Only show accounts with meaningful balances (>= 1000 RUB)
                     if account_rub >= 1000:
                         accounts_list.append(
@@ -111,15 +127,31 @@ class TBankClient:
 
         except RequestError as e:
             logger.error(f"T-Bank API Request Error: {e}")
-            return {"total_rub": 0.0, "total_usd": 0.0, "accounts": [], "error": str(e)}
+            return {
+                "total_rub": 0.0,
+                "total_usd": 0.0,
+                "main_rub": 0.0,
+                "iis_rub": 0.0,
+                "accounts": [],
+                "error": str(e),
+            }
         except Exception as e:
             logger.error(f"T-Bank Client Error: {e}")
-            return {"total_rub": 0.0, "total_usd": 0.0, "accounts": [], "error": str(e)}
+            return {
+                "total_rub": 0.0,
+                "total_usd": 0.0,
+                "main_rub": 0.0,
+                "iis_rub": 0.0,
+                "accounts": [],
+                "error": str(e),
+            }
 
         total_usd = total_rub / usd_rub_rate if usd_rub_rate > 0 else 0.0
 
         return {
             "total_rub": round(total_rub, 2),
             "total_usd": round(total_usd, 2),
+            "main_rub": round(main_rub, 2),
+            "iis_rub": round(iis_rub, 2),
             "accounts": accounts_list,
         }

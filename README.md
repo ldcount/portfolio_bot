@@ -42,6 +42,7 @@ Main entrypoint: `app/main.py`.
 | `/settings` | Choose a persistent automatic-report preset or disable reports |
 | `/frequency <minutes>` | Set a custom persistent automatic-report interval |
 | `/export` | Download raw portfolio history as a `portfolio_history.json` file attachment |
+| `/database` | Download daily SQLite snapshot history as a semicolon-delimited CSV |
 | `/help` | List all available commands with descriptions |
 
 ---
@@ -65,6 +66,18 @@ After each scheduled snapshot the bot writes today's portfolio totals to `data/p
 
 Automatic-report choices made through `/settings` or `/frequency` are stored in
 `data/bot_settings.json` and survive bot restarts. The runtime settings file is ignored by Git.
+
+### Daily SQLite snapshots
+
+Independently of automatic Telegram reports, the bot silently records one row per day at
+`DATABASE_SNAPSHOT_HOUR` (default `17:00`) in the configured timezone. The database is
+`data/portfolio_snapshots.sqlite3` and contains the T‑Bank Main and IIS balances, combined
+crypto, IBKR, official Bank of Russia USD/EUR rates, and portfolio totals in RUB, USD, and EUR.
+
+If the bot starts after the configured hour and the current date has no row, it takes one
+same-day catch-up snapshot. Failed sources are stored as blank values; totals remain blank
+when any required input is unavailable. `/database` exports every row in chronological order
+as an Excel-compatible UTF-8 CSV using semicolons and decimal commas.
 
 ---
 
@@ -96,6 +109,7 @@ Create a `.env` file in the project root. All settings are loaded from environme
 - `POLL_INTERVAL_MINUTES` (default: `120`) — initial default; persisted `/settings` or `/frequency` choices take precedence after the first change.
 - `WINDOW_START_HOUR` (default: `8`)
 - `WINDOW_END_HOUR` (default: `20`)
+- `DATABASE_SNAPSHOT_HOUR` (default: `17`) — independent silent SQLite snapshot hour.
 - `LOG_LEVEL` (default: `INFO`)
 
 ---
@@ -114,6 +128,7 @@ TIMEZONE=Europe/Paris
 POLL_INTERVAL_MINUTES=120
 WINDOW_START_HOUR=8
 WINDOW_END_HOUR=20
+DATABASE_SNAPSHOT_HOUR=17
 
 # Optional FX settings (currently reserved)
 FX_PROVIDER=ECB
@@ -242,6 +257,7 @@ Try in Telegram:
 - `/allocation` — allocation donut chart by platform or asset class
 - `/settings` — automatic-report presets and disable control
 - `/export` — download `portfolio_history.json`
+- `/database` — download all daily SQLite snapshots as a semicolon CSV
 - `/help` — list all commands
 
 ---
@@ -345,6 +361,9 @@ journalctl -u portfolio-bot -f
 - `app/telegram_client.py` — command handling + scheduled sending
 - `app/aggregator.py` — combines platform balances
 - `app/history_manager.py` — reads/writes daily portfolio snapshots
+- `app/snapshot_database.py` — SQLite schema and daily snapshot persistence
+- `app/daily_snapshot.py` — snapshot totals and semicolon CSV formatting
 - `data/portfolio_history.json` — persistent daily history log
+- `data/portfolio_snapshots.sqlite3` — daily detailed snapshot database
 - `app/platforms/*.py` — platform-specific integrations
 - `requirements.txt` — dependencies
