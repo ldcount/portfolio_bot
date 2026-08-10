@@ -79,6 +79,9 @@ same-day catch-up snapshot. Failed sources are stored as blank values; totals re
 when any required input is unavailable. `/database` exports every row in chronological order
 as an Excel-compatible UTF-8 CSV using semicolons and decimal commas.
 
+Scheduled snapshots allow up to 15 minutes of scheduler delay. A second recovery check runs
+15 minutes after the configured hour and exits immediately when the daily row already exists.
+
 ---
 
 ## 4) Configuration via `.env`

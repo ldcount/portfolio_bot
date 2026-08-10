@@ -33,6 +33,9 @@ _HISTORY_FILE = os.path.join(
     "portfolio_history.json",
 )
 
+_DATABASE_JOB_GRACE_SECONDS = 15 * 60
+_DATABASE_RECOVERY_DELAY_MINUTES = 15
+
 
 class TelegramBot:
     def __init__(self):
@@ -185,11 +188,20 @@ class TelegramBot:
             return
 
         job_queue = self.application.job_queue
-        for job_name in ("daily_database_snapshot", "daily_database_snapshot_catchup"):
+        for job_name in (
+            "daily_database_snapshot",
+            "daily_database_snapshot_recovery",
+            "daily_database_snapshot_catchup",
+        ):
             for job in job_queue.get_jobs_by_name(job_name):
                 job.schedule_removal()
 
         timezone = Config.get_timezone_obj()
+        job_options = {
+            "misfire_grace_time": _DATABASE_JOB_GRACE_SECONDS,
+            "coalesce": True,
+            "max_instances": 1,
+        }
         snapshot_time = datetime_time(
             hour=Config.DATABASE_SNAPSHOT_HOUR,
             minute=0,
@@ -199,6 +211,18 @@ class TelegramBot:
             self.database_snapshot_job,
             time=snapshot_time,
             name="daily_database_snapshot",
+            job_kwargs=job_options,
+        )
+        recovery_time = datetime_time(
+            hour=Config.DATABASE_SNAPSHOT_HOUR,
+            minute=_DATABASE_RECOVERY_DELAY_MINUTES,
+            tzinfo=timezone,
+        )
+        job_queue.run_daily(
+            self.database_snapshot_job,
+            time=recovery_time,
+            name="daily_database_snapshot_recovery",
+            job_kwargs=job_options,
         )
 
         now = datetime.now(timezone)
@@ -211,13 +235,16 @@ class TelegramBot:
                 self.database_snapshot_job,
                 when=1,
                 name="daily_database_snapshot_catchup",
+                job_kwargs=job_options,
             )
             logger.info("Scheduled same-day database snapshot catch-up.")
 
         logger.info(
-            "Daily database snapshot scheduled for %02d:00 %s.",
+            "Daily database snapshot scheduled for %02d:00 %s "
+            "with a %d-minute recovery check.",
             Config.DATABASE_SNAPSHOT_HOUR,
             Config.TIMEZONE,
+            _DATABASE_RECOVERY_DELAY_MINUTES,
         )
 
     # ------------------------------------------------------------------

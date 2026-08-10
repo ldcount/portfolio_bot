@@ -262,10 +262,29 @@ class DatabaseScheduleTests(unittest.TestCase):
             datetime_mock.now.return_value = now
             self.bot._schedule_database_job()
 
-        daily_time = self.bot.application.job_queue.run_daily.call_args.kwargs["time"]
-        self.assertEqual((daily_time.hour, daily_time.minute), (17, 0))
-        self.assertIsNotNone(daily_time.tzinfo)
+        self.assertEqual(self.bot.application.job_queue.run_daily.call_count, 2)
+        calls = {
+            call.kwargs["name"]: call.kwargs
+            for call in self.bot.application.job_queue.run_daily.call_args_list
+        }
+        daily = calls["daily_database_snapshot"]
+        recovery = calls["daily_database_snapshot_recovery"]
+        self.assertEqual((daily["time"].hour, daily["time"].minute), (17, 0))
+        self.assertEqual((recovery["time"].hour, recovery["time"].minute), (17, 15))
+        self.assertEqual(getattr(daily["time"].tzinfo, "zone", None), "Europe/Paris")
+        self.assertEqual(
+            daily["job_kwargs"],
+            {
+                "misfire_grace_time": 900,
+                "coalesce": True,
+                "max_instances": 1,
+            },
+        )
         self.bot.application.job_queue.run_once.assert_called_once()
+        self.assertEqual(
+            self.bot.application.job_queue.run_once.call_args.kwargs["job_kwargs"],
+            daily["job_kwargs"],
+        )
 
     def test_before_hour_does_not_schedule_catch_up(self):
         now = Config.get_timezone_obj().localize(datetime(2026, 8, 9, 16, 59))
@@ -277,7 +296,7 @@ class DatabaseScheduleTests(unittest.TestCase):
             datetime_mock.now.return_value = now
             self.bot._schedule_database_job()
 
-        self.bot.application.job_queue.run_daily.assert_called_once()
+        self.assertEqual(self.bot.application.job_queue.run_daily.call_count, 2)
         self.bot.application.job_queue.run_once.assert_not_called()
 
 
@@ -327,6 +346,22 @@ class DatabaseSnapshotJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(inserted_rows[0]["ibkr_usd"])
         self.assertIsNone(inserted_rows[0]["total_usd"])
         context.bot.send_message.assert_not_awaited()
+
+    async def test_recovery_job_exits_before_scanning_when_row_exists(self):
+        bot = TelegramBot.__new__(TelegramBot)
+        bot._database_snapshot_lock = asyncio.Lock()
+        bot.aggregator = Mock()
+        bot.fx_client = Mock()
+
+        with patch.object(
+            snapshot_database,
+            "has_snapshot_for_date",
+            return_value=True,
+        ):
+            await bot.database_snapshot_job(Mock())
+
+        bot.aggregator.get_portfolio_summary.assert_not_called()
+        bot.fx_client.get_rates.assert_not_called()
 
 
 class DatabaseCommandTests(unittest.IsolatedAsyncioTestCase):
