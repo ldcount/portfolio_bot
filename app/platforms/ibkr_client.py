@@ -174,7 +174,7 @@ class IBKRClient:
             return True
 
         now = self._now()
-        refresh_hour = Config.WINDOW_START_HOUR
+        refresh_hour = Config.IBKR_CACHE_REFRESH_HOUR
 
         if fetched_dt.date() == now.date():
             return False

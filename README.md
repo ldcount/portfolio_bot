@@ -19,13 +19,13 @@ Then it sends one formatted Telegram message with:
 
 ## 1) How it works (high level)
 
-1. Telegram bot receives a command (e.g. `/status`) **or** runs on a schedule (`POLL_INTERVAL_MINUTES`).
+1. Telegram bot receives a command (e.g. `/status`) **or** runs the configured daily report.
 2. The app requests balances from each configured platform.
 3. Results are aggregated in `app/aggregator.py`.
 4. A single HTML-formatted message is sent to your configured Telegram chat.
 5. After each scheduled report, the current portfolio totals are saved to `data/portfolio_history.json` (one entry per day).
 
-Scheduled snapshots are **anchored to `WINDOW_START_HOUR` (default 08:00)**. With a 3-hour interval the slots are 08:00, 11:00, 14:00, …. If you change `/frequency` mid-day, the next snapshot lands on the nearest upcoming anchor-aligned slot.
+Automatic reports run once per day at either **12:30** or **20:30** in `Europe/Paris` time. Use `/settings` to select the time, pause delivery, or resume at the saved time.
 
 Main entrypoint: `app/main.py`.
 
@@ -36,13 +36,10 @@ Main entrypoint: `app/main.py`.
 | Command | Description |
 |---|---|
 | `/status` | Fetch and send the current portfolio snapshot immediately |
-| `/history` | Show a mobile-friendly performance chart with optional daily values |
-| `/rub_chart` | Send only the last 30 days trend chart in RUB |
+| `/performance` | Show a mobile-friendly 30-day performance chart with optional daily values |
 | `/allocation` | Show current allocation by platform or asset class |
-| `/settings` | Choose a persistent automatic-report preset or disable reports |
-| `/frequency <minutes>` | Set a custom persistent automatic-report interval |
-| `/export` | Download raw portfolio history as a `portfolio_history.json` file attachment |
-| `/database` | Download daily SQLite snapshot history as a semicolon-delimited CSV |
+| `/settings` | Select, pause, or resume the persistent daily automatic report |
+| `/export` | Download full daily SQLite snapshot history as a semicolon-delimited CSV |
 | `/help` | List all available commands with descriptions |
 
 ---
@@ -59,12 +56,12 @@ After each scheduled snapshot the bot writes today's portfolio totals to `data/p
 ```
 
 - Key format: `DD-MM-YYYY`
-- Only the **last** scheduled run of the day is stored (each run overwrites the same key).
-- `/history` opens the trend chart first; daily values are available from its inline button.
+- One complete scheduled report is stored per day; a complete manual `/status` request can refresh that day's value.
+- `/performance` opens the trend chart first; daily values are available from its inline button.
 - Complete snapshots show 1-day and 7-day changes when suitable comparison data exists.
-- The file is created automatically on first write; the `data/` folder is committed with 5 seeded dummy entries so `/history` works immediately.
+- The file is created automatically on first write; the `data/` folder is committed with 5 seeded dummy entries so `/performance` works immediately.
 
-Automatic-report choices made through `/settings` or `/frequency` are stored in
+Automatic-report choices made through `/settings` are stored in
 `data/bot_settings.json` and survive bot restarts. The runtime settings file is ignored by Git.
 
 ### Daily SQLite snapshots
@@ -76,7 +73,7 @@ crypto, IBKR, official Bank of Russia USD/EUR rates, and portfolio totals in RUB
 
 If the bot starts after the configured hour and the current date has no row, it takes one
 same-day catch-up snapshot. Failed sources are stored as blank values; totals remain blank
-when any required input is unavailable. `/database` exports every row in chronological order
+when any required input is unavailable. `/export` exports every row in chronological order
 as an Excel-compatible UTF-8 CSV using semicolons and decimal commas.
 
 Scheduled snapshots allow up to 15 minutes of scheduler delay. A second recovery check runs
@@ -109,10 +106,8 @@ Create a `.env` file in the project root. All settings are loaded from environme
 - `IBKR_FLEX_TOKEN` — IBKR Flex Web Service token.
 - `IBKR_QUERY_ID` — ID of your saved Flex query.
 - `TIMEZONE` (default: `Europe/Paris`)
-- `POLL_INTERVAL_MINUTES` (default: `120`) — initial default; persisted `/settings` or `/frequency` choices take precedence after the first change.
-- `WINDOW_START_HOUR` (default: `8`)
-- `WINDOW_END_HOUR` (default: `20`)
 - `DATABASE_SNAPSHOT_HOUR` (default: `17`) — independent silent SQLite snapshot hour.
+- `IBKR_CACHE_REFRESH_HOUR` (default: `8`) — earliest local hour for refreshing the daily IBKR Flex cache.
 - `LOG_LEVEL` (default: `INFO`)
 
 ---
@@ -128,10 +123,8 @@ TELEGRAM_CHAT_ID=123456789
 
 # Schedule
 TIMEZONE=Europe/Paris
-POLL_INTERVAL_MINUTES=120
-WINDOW_START_HOUR=8
-WINDOW_END_HOUR=20
 DATABASE_SNAPSHOT_HOUR=17
+IBKR_CACHE_REFRESH_HOUR=8
 
 # Optional FX settings (currently reserved)
 FX_PROVIDER=ECB
@@ -254,13 +247,10 @@ python -m app.main
 
 Try in Telegram:
 - `/status` — immediate portfolio snapshot
-- `/frequency 5` — switch to 5-minute scan interval (next fire aligned to 08:00 anchor)
-- `/history` — view past 30 days + trend chart
-- `/rub_chart` — send only the RUB trend chart
+- `/performance` — view the past 30 days and trend chart
 - `/allocation` — allocation donut chart by platform or asset class
-- `/settings` — automatic-report presets and disable control
-- `/export` — download `portfolio_history.json`
-- `/database` — download all daily SQLite snapshots as a semicolon CSV
+- `/settings` — choose 12:30 or 20:30, pause, or resume automatic reports
+- `/export` — download all daily SQLite snapshots as a semicolon CSV
 - `/help` — list all commands
 
 ---

@@ -12,10 +12,8 @@ class Config:
 
     # Schedule
     TIMEZONE = os.getenv("TIMEZONE", "Europe/Paris")
-    POLL_INTERVAL_MINUTES = int(os.getenv("POLL_INTERVAL_MINUTES", 120))
-    WINDOW_START_HOUR = int(os.getenv("WINDOW_START_HOUR", 8))
-    WINDOW_END_HOUR = int(os.getenv("WINDOW_END_HOUR", 20))
     DATABASE_SNAPSHOT_HOUR = int(os.getenv("DATABASE_SNAPSHOT_HOUR", 17))
+    IBKR_CACHE_REFRESH_HOUR = int(os.getenv("IBKR_CACHE_REFRESH_HOUR", 8))
 
     # FX
     FX_PROVIDER = os.getenv("FX_PROVIDER", "ECB")
@@ -56,6 +54,8 @@ class Config:
         missing = []
         if not 0 <= cls.DATABASE_SNAPSHOT_HOUR <= 23:
             raise ValueError("DATABASE_SNAPSHOT_HOUR must be between 0 and 23")
+        if not 0 <= cls.IBKR_CACHE_REFRESH_HOUR <= 23:
+            raise ValueError("IBKR_CACHE_REFRESH_HOUR must be between 0 and 23")
         if not cls.TELEGRAM_BOT_TOKEN:
             missing.append("TELEGRAM_BOT_TOKEN")
         if not cls.TELEGRAM_CHAT_ID:

@@ -30,8 +30,8 @@
 - `build_csv(rows)`: Produces an in-memory UTF-8 semicolon CSV with decimal commas.
 
 ### `settings_manager.py`
-- `load_settings(default_interval_minutes)`: Loads the persisted automatic-report interval and enabled state, with safe defaults.
-- `save_schedule(interval_minutes, enabled)`: Atomically persists the automatic-report interval and enabled state.
+- `load_settings()`: Loads the persisted daily report time and enabled state, migrating legacy interval settings to 20:30.
+- `save_schedule(report_time, enabled)`: Atomically persists the automatic-report time and enabled state.
 
 ### `chart.py`
 - `build_portfolio_chart(entries, currency, line_color)`: Builds a mobile-friendly trend PNG with all data points and focused annotations.
@@ -40,13 +40,13 @@
 ### `telegram_client.py`
 - `TelegramBot.__init__()`: Initializes the application, command handlers, persisted schedule, inline navigation, and scheduled job.
 - `TelegramBot.status_command(update, context)`: Fetches balances and updates a progress message with the portfolio card.
-- `TelegramBot.history_command(update, context)`: Opens the chart-first history view with currency and daily-value controls.
+- `TelegramBot.performance_command(update, context)`: Opens the chart-first 30-day history view with currency and daily-value controls.
 - `TelegramBot.pie_chart_command(update, context)`: Opens allocation by platform with an asset-class toggle.
-- `TelegramBot.settings_command(update, context)`: Opens persistent automatic-report presets.
-- `TelegramBot.database_command(update, context)`: Sends all detailed daily snapshots as a CSV attachment.
+- `TelegramBot.settings_command(update, context)`: Opens persistent daily-report time and pause/resume controls.
+- `TelegramBot.export_command(update, context)`: Sends all detailed daily snapshots as a CSV attachment.
 - `TelegramBot.handle_callback(update, context)`: Handles refreshes and single-message navigation between portfolio views.
 - `TelegramBot.database_snapshot_job(context)`: Silently stores the independent daily SQLite snapshot.
-- `TelegramBot.scheduled_job(context)`: Async callback for the scheduled job. Fetches data and sends a message to the configured chat.
+- `TelegramBot.scheduled_job(context)`: Fetches data and sends the configured daily report to the authorized chat.
 - `TelegramBot.run()`: Starts the bot polling loop using `run_polling()`.
 
 ## Platforms

@@ -7,6 +7,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_DAILY_REPORT_TIME = "20:30"
+DAILY_REPORT_TIMES = ("12:30", "20:30")
+
 _SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "data",
@@ -14,10 +17,16 @@ _SETTINGS_FILE = os.path.join(
 )
 
 
-def load_settings(default_interval_minutes: int) -> dict[str, Any]:
-    """Load persisted scheduling settings, falling back to configured defaults."""
+def _validated_report_time(report_time: Any) -> str:
+    if report_time in DAILY_REPORT_TIMES:
+        return report_time
+    return DEFAULT_DAILY_REPORT_TIME
+
+
+def load_settings() -> dict[str, Any]:
+    """Load scheduling settings and migrate the legacy interval schema."""
     defaults = {
-        "poll_interval_minutes": default_interval_minutes,
+        "daily_report_time": DEFAULT_DAILY_REPORT_TIME,
         "scheduled_reports_enabled": True,
     }
     if not os.path.exists(_SETTINGS_FILE):
@@ -30,28 +39,41 @@ def load_settings(default_interval_minutes: int) -> dict[str, Any]:
         logger.warning("Could not load bot settings; using defaults: %s", exc)
         return defaults
 
-    interval = stored.get("poll_interval_minutes", default_interval_minutes)
+    if not isinstance(stored, dict):
+        logger.warning("Bot settings are not a JSON object; using safe defaults.")
+        stored = {}
+
+    report_time = _validated_report_time(stored.get("daily_report_time"))
     enabled = stored.get("scheduled_reports_enabled", True)
-    if not isinstance(interval, int) or interval < 1:
-        interval = default_interval_minutes
     if not isinstance(enabled, bool):
         enabled = True
 
-    return {
-        "poll_interval_minutes": interval,
+    settings = {
+        "daily_report_time": report_time,
         "scheduled_reports_enabled": enabled,
     }
+    if "daily_report_time" not in stored or stored != settings:
+        try:
+            save_schedule(report_time, enabled)
+        except OSError as exc:
+            logger.warning(
+                "Could not persist migrated bot settings; using them in memory: %s",
+                exc,
+            )
+    return settings
 
 
-def save_schedule(interval_minutes: int, enabled: bool = True) -> None:
-    """Persist the automatic-report interval and enabled state atomically."""
-    if interval_minutes < 1:
-        raise ValueError("interval_minutes must be positive")
+def save_schedule(report_time: str, enabled: bool = True) -> None:
+    """Persist the automatic-report time and enabled state atomically."""
+    if report_time not in DAILY_REPORT_TIMES:
+        raise ValueError(f"report_time must be one of: {', '.join(DAILY_REPORT_TIMES)}")
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a boolean")
 
     os.makedirs(os.path.dirname(_SETTINGS_FILE), exist_ok=True)
     temporary_file = f"{_SETTINGS_FILE}.tmp"
     payload = {
-        "poll_interval_minutes": interval_minutes,
+        "daily_report_time": report_time,
         "scheduled_reports_enabled": enabled,
     }
     try:

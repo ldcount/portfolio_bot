@@ -1,7 +1,6 @@
 import asyncio
 import logging
-import os
-from datetime import datetime, time as datetime_time, timedelta
+from datetime import datetime, time as datetime_time
 
 from telegram import (
     BotCommand,
@@ -25,13 +24,6 @@ from app import snapshot_database
 from app.platforms.cbr_fx_client import CBRFXClient
 
 logger = logging.getLogger(__name__)
-
-# Absolute path to the history JSON — used by /export
-_HISTORY_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data",
-    "portfolio_history.json",
-)
 
 _DATABASE_JOB_GRACE_SECONDS = 15 * 60
 _DATABASE_RECOVERY_DELAY_MINUTES = 15
@@ -58,10 +50,8 @@ class TelegramBot:
         except Exception as exc:
             logger.error("Could not initialize the portfolio snapshot database: %s", exc)
 
-        persisted_settings = settings_manager.load_settings(
-            Config.POLL_INTERVAL_MINUTES
-        )
-        self.poll_interval_minutes = persisted_settings["poll_interval_minutes"]
+        persisted_settings = settings_manager.load_settings()
+        self.daily_report_time = persisted_settings["daily_report_time"]
         self.scheduled_reports_enabled = persisted_settings[
             "scheduled_reports_enabled"
         ]
@@ -69,23 +59,15 @@ class TelegramBot:
         # Add command handlers
         self.application.add_handler(CommandHandler("status", self.status_command))
         self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(
-            CommandHandler("frequency", self.frequency_command)
-        )
         self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("history", self.history_command))
         self.application.add_handler(
-            CommandHandler("rub_chart", self.rub_chart_command)
-        )
-        self.application.add_handler(
-            CommandHandler("pie_chart", self.pie_chart_command)
+            CommandHandler("performance", self.performance_command)
         )
         self.application.add_handler(
             CommandHandler("allocation", self.pie_chart_command)
         )
         self.application.add_handler(CommandHandler("settings", self.settings_command))
         self.application.add_handler(CommandHandler("export", self.export_command))
-        self.application.add_handler(CommandHandler("database", self.database_command))
         self.application.add_handler(CallbackQueryHandler(self.handle_callback))
         self.application.add_error_handler(self.error_handler)
 
@@ -104,11 +86,10 @@ class TelegramBot:
         """Register Telegram's visible slash-command menu."""
         commands = [
             BotCommand("status", "Show the current portfolio"),
-            BotCommand("history", "Show portfolio performance"),
+            BotCommand("performance", "Show 30-day performance"),
             BotCommand("allocation", "Show portfolio allocation"),
             BotCommand("settings", "Change automatic reports"),
-            BotCommand("export", "Export portfolio history"),
-            BotCommand("database", "Download daily database history"),
+            BotCommand("export", "Export full portfolio history"),
             BotCommand("help", "Show all commands"),
         ]
         await application.bot.set_my_commands(
@@ -116,34 +97,8 @@ class TelegramBot:
             scope=BotCommandScopeChat(chat_id=int(self.chat_id)),
         )
 
-    def _seconds_until_next_slot(self) -> float:
-        """
-        Compute seconds until the next 8AM-anchored slot.
-
-        Slots are:  08:00, 08:00 + interval, 08:00 + 2*interval, …
-        If the current time is before 08:00 today, the first slot IS 08:00.
-        If no slot remains within today, the next slot is 08:00 tomorrow.
-        """
-        tz = Config.get_timezone_obj()
-        now = datetime.now(tz)
-        anchor = now.replace(
-            hour=Config.WINDOW_START_HOUR, minute=0, second=0, microsecond=0
-        )
-        interval_sec = self.poll_interval_minutes * 60
-
-        if now < anchor:
-            # Before the anchor today — first slot is the anchor itself
-            delay = (anchor - now).total_seconds()
-        else:
-            elapsed = (now - anchor).total_seconds()
-            slots_passed = int(elapsed // interval_sec)
-            next_slot = anchor + timedelta(seconds=(slots_passed + 1) * interval_sec)
-            delay = (next_slot - now).total_seconds()
-
-        return max(delay, 1.0)  # never zero to avoid immediate double-fire
-
     def _schedule_job(self):
-        """Schedule (or reschedule) the repeating portfolio snapshot job."""
+        """Schedule (or reschedule) the daily portfolio report."""
         if not self.application.job_queue:
             logger.warning("JobQueue not available; schedule change was saved only.")
             return
@@ -157,27 +112,28 @@ class TelegramBot:
             logger.info("Automatic portfolio reports are disabled.")
             return
 
-        interval_sec = self.poll_interval_minutes * 60
-        first_sec = self._seconds_until_next_slot()
-
-        self.application.job_queue.run_repeating(
+        hour, minute = (int(part) for part in self.daily_report_time.split(":"))
+        report_time = datetime_time(
+            hour=hour,
+            minute=minute,
+            tzinfo=Config.get_timezone_obj(),
+        )
+        self.application.job_queue.run_daily(
             self.scheduled_job,
-            interval=interval_sec,
-            first=first_sec,
+            time=report_time,
             chat_id=self.chat_id,
             name="portfolio_snapshot",
         )
-        next_dt = datetime.now(Config.get_timezone_obj()) + timedelta(seconds=first_sec)
         logger.info(
-            f"Scheduled job every {self.poll_interval_minutes} min. "
-            f"Next fire at {next_dt.strftime('%H:%M')} "
-            f"({Config.WINDOW_START_HOUR}:00–{Config.WINDOW_END_HOUR}:00 window)"
+            "Daily portfolio report scheduled for %s %s.",
+            self.daily_report_time,
+            Config.TIMEZONE,
         )
 
-    def _set_schedule(self, interval_minutes: int, enabled: bool = True) -> None:
+    def _set_schedule(self, report_time: str, enabled: bool = True) -> None:
         """Apply and persist an automatic-report setting."""
-        settings_manager.save_schedule(interval_minutes, enabled)
-        self.poll_interval_minutes = interval_minutes
+        settings_manager.save_schedule(report_time, enabled)
+        self.daily_report_time = report_time
         self.scheduled_reports_enabled = enabled
         self._schedule_job()
 
@@ -380,22 +336,28 @@ class TelegramBot:
         )
 
     def _get_settings_keyboard(self) -> InlineKeyboardMarkup:
-        def label(minutes: int, text: str) -> str:
-            selected = self.scheduled_reports_enabled and self.poll_interval_minutes == minutes
+        def label(report_time: str) -> str:
+            selected = (
+                self.scheduled_reports_enabled
+                and self.daily_report_time == report_time
+            )
+            text = f"Send at {report_time}"
             return f"{text} ✓" if selected else text
 
-        disabled = "Disabled ✓" if not self.scheduled_reports_enabled else "Disable"
+        if self.scheduled_reports_enabled:
+            toggle = InlineKeyboardButton("Pause", callback_data="schedule_pause")
+        else:
+            toggle = InlineKeyboardButton(
+                f"Resume at {self.daily_report_time}",
+                callback_data="schedule_resume",
+            )
         return InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton(label(30, "30 min"), callback_data="schedule_30"),
-                    InlineKeyboardButton(label(60, "1 hour"), callback_data="schedule_60"),
+                    InlineKeyboardButton(label("12:30"), callback_data="schedule_1230"),
+                    InlineKeyboardButton(label("20:30"), callback_data="schedule_2030"),
                 ],
-                [
-                    InlineKeyboardButton(label(120, "2 hours"), callback_data="schedule_120"),
-                    InlineKeyboardButton(label(240, "4 hours"), callback_data="schedule_240"),
-                ],
-                [InlineKeyboardButton(disabled, callback_data="schedule_disable")],
+                [toggle],
                 [InlineKeyboardButton("🏠 Portfolio", callback_data="show_status")],
             ]
         )
@@ -468,15 +430,18 @@ class TelegramBot:
 
     def _settings_text(self) -> str:
         if self.scheduled_reports_enabled:
-            schedule = f"Every <b>{self.poll_interval_minutes} minutes</b>"
+            status = "<b>Active</b>"
+            schedule = f"Daily at <b>{self.daily_report_time}</b>"
         else:
-            schedule = "<b>Disabled</b>"
+            status = "<b>Paused</b>"
+            schedule = f"Resume time: <b>{self.daily_report_time}</b>"
         return (
             "⚙️ <b>Automatic reports</b>\n\n"
+            f"Status: {status}\n"
             f"Schedule: {schedule}\n"
-            f"Active window: <b>{Config.WINDOW_START_HOUR:02d}:00–"
-            f"{Config.WINDOW_END_HOUR:02d}:00</b>\n\n"
-            "Choose a preset. This setting is saved across bot restarts."
+            f"Timezone: <b>{Config.TIMEZONE}</b>\n\n"
+            "Choose a report time or pause delivery. This setting is saved "
+            "across bot restarts."
         )
 
     async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -489,44 +454,17 @@ class TelegramBot:
             reply_markup=self._get_settings_keyboard(),
         )
 
-    async def frequency_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle legacy /frequency while steering users toward preset buttons."""
-        if not self._is_authorized(update):
-            await update.message.reply_text("Unauthorized access.")
-            return
-        if not context.args:
-            await self.settings_command(update, context)
-            return
-        try:
-            minutes = int(context.args[0])
-            if len(context.args) != 1 or minutes < 1:
-                raise ValueError
-        except ValueError:
-            await update.message.reply_text(
-                "❌ Enter one positive number, or use /settings for presets."
-            )
-            return
-
-        self._set_schedule(minutes, True)
-        await update.message.reply_text(
-            f"✅ Automatic reports set to every <b>{minutes} minutes</b>.",
-            parse_mode="HTML",
-            reply_markup=self._get_settings_keyboard(),
-        )
-
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
             await update.message.reply_text("Unauthorized access.")
             return
         msg = (
             "📋 <b>Available commands</b>\n\n"
-            "/status — current portfolio snapshot\n"
-            "/history — performance chart and daily values\n"
+            "/status — fetch and generate the current portfolio report\n"
+            "/performance — 30-day performance chart and daily values\n"
             "/allocation — allocation by platform or asset class\n"
-            "/settings — automatic report presets\n"
-            "/export — download raw portfolio history\n"
-            "/database — download daily database history as CSV\n"
-            "/frequency &lt;minutes&gt; — set a custom interval\n"
+            "/settings — configure or pause the daily automatic report\n"
+            "/export — download the full portfolio history as CSV\n"
             "/help — show this message"
         )
         await update.message.reply_text(
@@ -697,17 +635,13 @@ class TelegramBot:
                 self._get_retry_keyboard("show_history"),
             )
 
-    async def history_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def performance_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         if not self._is_authorized(update):
             await update.message.reply_text("Unauthorized access.")
             return
         await self._send_history_screen(update.message, "USD")
-
-    async def rub_chart_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._is_authorized(update):
-            await update.message.reply_text("Unauthorized access.")
-            return
-        await self._send_history_screen(update.message, "RUB")
 
     def _allocation_caption(self, summary: dict, grouping: str) -> str:
         title = "platform" if grouping == "platform" else "asset class"
@@ -771,33 +705,7 @@ class TelegramBot:
         await self._send_allocation_screen(update.message, context)
 
     async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /export — send portfolio_history.json as a file attachment."""
-        if not self._is_authorized(update):
-            await update.message.reply_text("Unauthorized access.")
-            return
-
-        if not os.path.exists(_HISTORY_FILE):
-            await update.message.reply_text(
-                "No history file found yet. It is created after the first scheduled snapshot."
-            )
-            return
-
-        try:
-            with open(_HISTORY_FILE, "rb") as f:
-                await update.message.reply_document(
-                    document=InputFile(f, filename="portfolio_history.json"),
-                    caption="📦 Raw portfolio history (DD-MM-YYYY → USD / RUB)",
-                )
-        except (TimedOut, NetworkError) as e:
-            logger.warning(f"Telegram network error sending export: {e}")
-        except Exception as e:
-            logger.error(f"Export failed: {e}")
-            await update.message.reply_text("⚠️ Could not send history file.")
-
-    async def database_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """Handle /database — send all SQLite snapshots as a semicolon CSV."""
+        """Handle /export — send all SQLite snapshots as a semicolon CSV."""
         if not self._is_authorized(update):
             await update.message.reply_text("Unauthorized access.")
             return
@@ -822,11 +730,11 @@ class TelegramBot:
                 caption="Daily portfolio database history",
             )
         except (TimedOut, NetworkError) as exc:
-            logger.warning("Telegram network error sending database export: %s", exc)
+            logger.warning("Telegram network error sending CSV export: %s", exc)
         except Exception as exc:
-            logger.error("Database export failed: %s", exc)
+            logger.error("CSV export failed: %s", exc)
             await update.message.reply_text(
-                "⚠️ Could not send the database history."
+                "⚠️ Could not send the portfolio history."
             )
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -931,11 +839,17 @@ class TelegramBot:
             )
 
         elif data.startswith("schedule_"):
-            if data == "schedule_disable":
-                self._set_schedule(self.poll_interval_minutes, False)
+            if data == "schedule_pause":
+                self._set_schedule(self.daily_report_time, False)
+            elif data == "schedule_resume":
+                self._set_schedule(self.daily_report_time, True)
+            elif data == "schedule_1230":
+                self._set_schedule("12:30", True)
+            elif data == "schedule_2030":
+                self._set_schedule("20:30", True)
             else:
-                minutes = int(data.removeprefix("schedule_"))
-                self._set_schedule(minutes, True)
+                logger.warning("Ignoring unknown schedule callback: %s", data)
+                return
             await self._replace_query_with_text(
                 query, self._settings_text(), self._get_settings_keyboard()
             )
@@ -1006,18 +920,13 @@ class TelegramBot:
                 )
 
     # ------------------------------------------------------------------
-    # Existing scheduled Telegram report
+    # Daily Telegram report
     # ------------------------------------------------------------------
 
     async def scheduled_job(self, context: ContextTypes.DEFAULT_TYPE):
-        """Periodic portfolio report — only fires within the configured time window."""
-        now = datetime.now(Config.get_timezone_obj())
-        if not (Config.WINDOW_START_HOUR <= now.hour <= Config.WINDOW_END_HOUR):
-            logger.info("Outside configured time window. Skipping report.")
-            return
-
+        """Fetch and send the configured daily portfolio report."""
         chat_id = context.job.chat_id
-        logger.info("Running scheduled report...")
+        logger.info("Running daily portfolio report...")
         try:
             summary = await self._get_portfolio_summary()
             msg = self._format_status_message(summary, timestamp=False)

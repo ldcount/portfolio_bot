@@ -247,6 +247,7 @@ class TBankGroupingTests(unittest.TestCase):
 class DatabaseScheduleTests(unittest.TestCase):
     def setUp(self):
         self.bot = TelegramBot.__new__(TelegramBot)
+        self.bot.scheduled_reports_enabled = False
         self.bot.application = Mock()
         self.bot.application.job_queue = Mock()
         self.bot.application.job_queue.get_jobs_by_name.return_value = []
@@ -364,7 +365,7 @@ class DatabaseSnapshotJobTests(unittest.IsolatedAsyncioTestCase):
         bot.fx_client.get_rates.assert_not_called()
 
 
-class DatabaseCommandTests(unittest.IsolatedAsyncioTestCase):
+class ExportCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_database_sends_clear_message(self):
         bot = TelegramBot.__new__(TelegramBot)
         bot.chat_id = "123"
@@ -374,12 +375,12 @@ class DatabaseCommandTests(unittest.IsolatedAsyncioTestCase):
         update.message.reply_document = AsyncMock()
 
         with patch.object(snapshot_database, "get_all_snapshots", return_value=[]):
-            await bot.database_command(update, Mock())
+            await bot.export_command(update, Mock())
 
         update.message.reply_text.assert_awaited_once()
         update.message.reply_document.assert_not_awaited()
 
-    async def test_database_command_sends_dated_csv_attachment(self):
+    async def test_export_command_sends_dated_csv_attachment(self):
         bot = TelegramBot.__new__(TelegramBot)
         bot.chat_id = "123"
         update = Mock()
@@ -394,7 +395,7 @@ class DatabaseCommandTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with patch.object(snapshot_database, "get_all_snapshots", return_value=rows):
-            await bot.database_command(update, Mock())
+            await bot.export_command(update, Mock())
 
         update.message.reply_document.assert_awaited_once()
         document = update.message.reply_document.await_args.kwargs["document"]

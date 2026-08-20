@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import requests
+from telegram.ext import CommandHandler
 
 from app.aggregator import Aggregator
 from app.config import Config
@@ -308,22 +309,200 @@ class HistoryUxTests(unittest.TestCase):
 
 
 class SettingsPersistenceTests(unittest.TestCase):
+    def test_fresh_settings_default_to_enabled_at_2030(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_file = os.path.join(temp_dir, "bot_settings.json")
+            with patch.object(settings_manager, "_SETTINGS_FILE", settings_file):
+                self.assertEqual(
+                    settings_manager.load_settings(),
+                    {
+                        "daily_report_time": "20:30",
+                        "scheduled_reports_enabled": True,
+                    },
+                )
+
     def test_schedule_settings_survive_reload(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             settings_file = os.path.join(temp_dir, "bot_settings.json")
             with patch.object(settings_manager, "_SETTINGS_FILE", settings_file):
-                settings_manager.save_schedule(240, False)
-                loaded = settings_manager.load_settings(120)
+                settings_manager.save_schedule("12:30", False)
+                loaded = settings_manager.load_settings()
 
                 self.assertEqual(
                     loaded,
                     {
-                        "poll_interval_minutes": 240,
+                        "daily_report_time": "12:30",
                         "scheduled_reports_enabled": False,
                     },
                 )
                 with open(settings_file, "r", encoding="utf-8") as file:
-                    self.assertEqual(json.load(file)["poll_interval_minutes"], 240)
+                    self.assertEqual(json.load(file)["daily_report_time"], "12:30")
+
+    def test_legacy_interval_settings_migrate_and_preserve_pause(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_file = os.path.join(temp_dir, "bot_settings.json")
+            with open(settings_file, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "poll_interval_minutes": 240,
+                        "scheduled_reports_enabled": False,
+                    },
+                    file,
+                )
+
+            with patch.object(settings_manager, "_SETTINGS_FILE", settings_file):
+                loaded = settings_manager.load_settings()
+
+            self.assertEqual(
+                loaded,
+                {
+                    "daily_report_time": "20:30",
+                    "scheduled_reports_enabled": False,
+                },
+            )
+            with open(settings_file, "r", encoding="utf-8") as file:
+                self.assertEqual(json.load(file), loaded)
+
+    def test_legacy_enabled_interval_migrates_to_enabled_at_2030(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_file = os.path.join(temp_dir, "bot_settings.json")
+            with open(settings_file, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "poll_interval_minutes": 120,
+                        "scheduled_reports_enabled": True,
+                    },
+                    file,
+                )
+
+            with patch.object(settings_manager, "_SETTINGS_FILE", settings_file):
+                loaded = settings_manager.load_settings()
+
+            self.assertEqual(
+                loaded,
+                {
+                    "daily_report_time": "20:30",
+                    "scheduled_reports_enabled": True,
+                },
+            )
+
+    def test_migration_write_failure_uses_migrated_values_in_memory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_file = os.path.join(temp_dir, "bot_settings.json")
+            with open(settings_file, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "poll_interval_minutes": 60,
+                        "scheduled_reports_enabled": False,
+                    },
+                    file,
+                )
+
+            with (
+                patch.object(settings_manager, "_SETTINGS_FILE", settings_file),
+                patch.object(
+                    settings_manager,
+                    "save_schedule",
+                    side_effect=OSError("read-only filesystem"),
+                ),
+            ):
+                loaded = settings_manager.load_settings()
+
+            self.assertEqual(
+                loaded,
+                {
+                    "daily_report_time": "20:30",
+                    "scheduled_reports_enabled": False,
+                },
+            )
+
+    def test_malformed_settings_fall_back_to_enabled_at_2030(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_file = os.path.join(temp_dir, "bot_settings.json")
+            with open(settings_file, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "daily_report_time": "09:15",
+                        "scheduled_reports_enabled": "yes",
+                    },
+                    file,
+                )
+
+            with patch.object(settings_manager, "_SETTINGS_FILE", settings_file):
+                loaded = settings_manager.load_settings()
+
+            self.assertEqual(
+                loaded,
+                {
+                    "daily_report_time": "20:30",
+                    "scheduled_reports_enabled": True,
+                },
+            )
+
+
+class DailyReportScheduleTests(unittest.TestCase):
+    def setUp(self):
+        self.bot = TelegramBot.__new__(TelegramBot)
+        self.bot.application = Mock()
+        self.bot.application.job_queue = Mock()
+        self.existing_job = Mock()
+        self.bot.application.job_queue.get_jobs_by_name.return_value = [
+            self.existing_job
+        ]
+        self.bot.scheduled_job = AsyncMock()
+        self.bot.chat_id = "123"
+        self.bot.daily_report_time = "12:30"
+        self.bot.scheduled_reports_enabled = True
+
+    def test_schedules_one_daily_report_in_paris_timezone(self):
+        self.bot._schedule_job()
+
+        self.existing_job.schedule_removal.assert_called_once()
+        self.bot.application.job_queue.run_repeating.assert_not_called()
+        self.bot.application.job_queue.run_daily.assert_called_once()
+        call = self.bot.application.job_queue.run_daily.call_args
+        self.assertEqual(
+            (call.kwargs["time"].hour, call.kwargs["time"].minute),
+            (12, 30),
+        )
+        self.assertEqual(
+            getattr(call.kwargs["time"].tzinfo, "zone", None),
+            "Europe/Paris",
+        )
+        self.assertEqual(call.kwargs["chat_id"], "123")
+
+    def test_pausing_removes_the_job_and_retains_report_time(self):
+        self.bot.scheduled_reports_enabled = False
+
+        self.bot._schedule_job()
+
+        self.existing_job.schedule_removal.assert_called_once()
+        self.bot.application.job_queue.run_daily.assert_not_called()
+        self.assertEqual(self.bot.daily_report_time, "12:30")
+
+    @patch("app.telegram_client.settings_manager.save_schedule")
+    def test_selecting_time_persists_enables_and_reschedules(self, save_schedule):
+        self.bot._schedule_job = Mock()
+
+        self.bot._set_schedule("20:30", True)
+
+        save_schedule.assert_called_once_with("20:30", True)
+        self.assertEqual(self.bot.daily_report_time, "20:30")
+        self.assertTrue(self.bot.scheduled_reports_enabled)
+        self.bot._schedule_job.assert_called_once()
+
+    def test_paused_keyboard_offers_resume_at_saved_time(self):
+        self.bot.scheduled_reports_enabled = False
+
+        buttons = [
+            button
+            for row in self.bot._get_settings_keyboard().inline_keyboard
+            for button in row
+        ]
+
+        resume = next(button for button in buttons if button.text.startswith("Resume"))
+        self.assertEqual(resume.text, "Resume at 12:30")
+        self.assertEqual(resume.callback_data, "schedule_resume")
 
 
 class ChartUxTests(unittest.TestCase):
@@ -356,6 +535,53 @@ class ChartUxTests(unittest.TestCase):
 
 
 class AsyncAggregationTests(unittest.IsolatedAsyncioTestCase):
+    def test_constructor_registers_only_requested_commands_and_hidden_start(self):
+        application = Mock()
+        application.job_queue = None
+        builder = Mock()
+        builder.token.return_value = builder
+        builder.post_init.return_value = builder
+        builder.build.return_value = application
+
+        with (
+            patch.object(Config, "TELEGRAM_BOT_TOKEN", "token"),
+            patch.object(Config, "TELEGRAM_CHAT_ID", "12345"),
+            patch("app.telegram_client.Application.builder", return_value=builder),
+            patch("app.telegram_client.Aggregator"),
+            patch("app.telegram_client.CBRFXClient"),
+            patch("app.telegram_client.snapshot_database.initialize_database"),
+            patch.object(
+                settings_manager,
+                "load_settings",
+                return_value={
+                    "daily_report_time": "20:30",
+                    "scheduled_reports_enabled": True,
+                },
+            ),
+        ):
+            TelegramBot()
+
+        handlers = [
+            call.args[0]
+            for call in application.add_handler.call_args_list
+            if isinstance(call.args[0], CommandHandler)
+        ]
+        registered_commands = {
+            command for handler in handlers for command in handler.commands
+        }
+        self.assertEqual(
+            registered_commands,
+            {
+                "start",
+                "status",
+                "performance",
+                "allocation",
+                "settings",
+                "export",
+                "help",
+            },
+        )
+
     async def test_exchange_refresh_is_offloaded_from_event_loop(self):
         bot = TelegramBot.__new__(TelegramBot)
         bot._aggregation_lock = asyncio.Lock()
@@ -382,14 +608,52 @@ class AsyncAggregationTests(unittest.IsolatedAsyncioTestCase):
             [command.command for command in commands],
             [
                 "status",
-                "history",
+                "performance",
                 "allocation",
                 "settings",
                 "export",
-                "database",
                 "help",
             ],
         )
+
+    async def test_performance_command_uses_existing_30_day_history_view(self):
+        bot = TelegramBot.__new__(TelegramBot)
+        bot.chat_id = "12345"
+        bot._send_history_screen = AsyncMock()
+        update = Mock()
+        update.effective_chat.id = 12345
+
+        await bot.performance_command(update, Mock())
+
+        bot._send_history_screen.assert_awaited_once_with(update.message, "USD")
+
+    async def test_help_lists_only_the_public_commands(self):
+        bot = TelegramBot.__new__(TelegramBot)
+        bot.chat_id = "12345"
+        update = Mock()
+        update.effective_chat.id = 12345
+        update.message.reply_text = AsyncMock()
+
+        await bot.help_command(update, Mock())
+
+        message = update.message.reply_text.await_args.args[0]
+        for command in (
+            "/status",
+            "/performance",
+            "/allocation",
+            "/settings",
+            "/export",
+            "/help",
+        ):
+            self.assertIn(command, message)
+        for legacy_command in (
+            "/history",
+            "/database",
+            "/frequency",
+            "/rub_chart",
+            "/pie_chart",
+        ):
+            self.assertNotIn(legacy_command, message)
 
     async def test_replacing_chart_photo_uses_multipart_attachment_uri(self):
         bot = TelegramBot.__new__(TelegramBot)
