@@ -533,6 +533,19 @@ class ChartUxTests(unittest.TestCase):
 
         self.assertEqual(buffer.read(8), b"\x89PNG\r\n\x1a\n")
 
+    def test_performance_caption_calculates_period_changes(self):
+        bot = TelegramBot.__new__(TelegramBot)
+        entries = [
+            {"date": "20-08-2026", "USD": 130.0, "RUB": 11700.0},
+            {"date": "13-08-2026", "USD": 120.0, "RUB": 10800.0},
+            {"date": "21-07-2026", "USD": 100.0, "RUB": 9000.0},
+        ]
+
+        caption = bot._history_caption(entries, "USD")
+
+        self.assertIn("7D:", caption)
+        self.assertIn("30D:", caption)
+
 
 class AsyncAggregationTests(unittest.IsolatedAsyncioTestCase):
     def test_constructor_registers_only_requested_commands_and_hidden_start(self):
@@ -626,6 +639,74 @@ class AsyncAggregationTests(unittest.IsolatedAsyncioTestCase):
         await bot.performance_command(update, Mock())
 
         bot._send_history_screen.assert_awaited_once_with(update.message, "USD")
+
+    async def test_performance_upload_completes_before_progress_is_deleted(self):
+        bot = TelegramBot.__new__(TelegramBot)
+        message = Mock()
+        progress = Mock()
+        events = []
+
+        async def reply_photo(**kwargs):
+            events.append("photo")
+
+        async def delete_progress():
+            events.append("delete")
+
+        message.reply_text = AsyncMock(return_value=progress)
+        message.reply_photo = AsyncMock(side_effect=reply_photo)
+        progress.delete = AsyncMock(side_effect=delete_progress)
+        progress.edit_text = AsyncMock()
+        entries = [
+            {"date": "20-08-2026", "USD": 130.0, "RUB": 11700.0},
+            {"date": "13-08-2026", "USD": 120.0, "RUB": 10800.0},
+            {"date": "21-07-2026", "USD": 100.0, "RUB": 9000.0},
+        ]
+
+        with (
+            patch.object(history_manager, "get_history", return_value=entries),
+            patch.object(
+                chart_module,
+                "build_portfolio_chart",
+                return_value=io.BytesIO(b"fake-png"),
+            ),
+        ):
+            await bot._send_history_screen(message, "USD")
+
+        self.assertEqual(events, ["photo", "delete"])
+        progress.edit_text.assert_not_awaited()
+        caption = message.reply_photo.await_args.kwargs["caption"]
+        self.assertIn("7D:", caption)
+        self.assertIn("30D:", caption)
+
+    async def test_performance_upload_failure_keeps_visible_error_message(self):
+        bot = TelegramBot.__new__(TelegramBot)
+        message = Mock()
+        progress = Mock()
+        message.reply_text = AsyncMock(return_value=progress)
+        message.reply_photo = AsyncMock(side_effect=RuntimeError("upload failed"))
+        progress.delete = AsyncMock()
+        progress.edit_text = AsyncMock()
+        entries = [
+            {"date": "20-08-2026", "USD": 130.0, "RUB": 11700.0},
+            {"date": "13-08-2026", "USD": 120.0, "RUB": 10800.0},
+        ]
+
+        with (
+            patch.object(history_manager, "get_history", return_value=entries),
+            patch.object(
+                chart_module,
+                "build_portfolio_chart",
+                return_value=io.BytesIO(b"fake-png"),
+            ),
+        ):
+            await bot._send_history_screen(message, "USD")
+
+        progress.delete.assert_not_awaited()
+        progress.edit_text.assert_awaited_once()
+        self.assertIn(
+            "Could not build",
+            progress.edit_text.await_args.args[0],
+        )
 
     async def test_help_lists_only_the_public_commands(self):
         bot = TelegramBot.__new__(TelegramBot)

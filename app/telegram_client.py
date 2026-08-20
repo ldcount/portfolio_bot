@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, time as datetime_time
+from datetime import datetime, time as datetime_time, timedelta
 
 from telegram import (
     BotCommand,
@@ -590,20 +590,49 @@ class TelegramBot:
             buffer = await asyncio.to_thread(
                 chart_module.build_portfolio_chart, entries, currency, color
             )
-            await progress.delete()
+            caption = self._history_caption(entries, currency)
             await message.reply_photo(
                 photo=InputFile(buffer, filename=f"portfolio_{currency.lower()}.png"),
-                caption=self._history_caption(entries, currency),
+                caption=caption,
                 parse_mode="HTML",
                 reply_markup=self._get_history_keyboard(currency),
             )
+        except (TimedOut, NetworkError) as exc:
+            logger.warning(
+                "Telegram did not confirm performance chart delivery; "
+                "the photo may still arrive: %s",
+                exc,
+            )
+            try:
+                await progress.edit_text(
+                    "⚠️ Telegram did not confirm the chart upload. "
+                    "It may still arrive; retry if it does not."
+                )
+            except Exception as edit_exc:
+                logger.warning(
+                    "Could not update performance chart progress message: %s",
+                    edit_exc,
+                )
+            return
         except Exception as exc:
             logger.error("History chart failed: %s", exc)
-            await progress.edit_text(
-                "⚠️ <b>Could not build the performance chart.</b>",
-                parse_mode="HTML",
-                reply_markup=self._get_retry_keyboard("show_history"),
-            )
+            try:
+                await progress.edit_text(
+                    "⚠️ <b>Could not build the performance chart.</b>",
+                    parse_mode="HTML",
+                    reply_markup=self._get_retry_keyboard("show_history"),
+                )
+            except Exception as edit_exc:
+                logger.warning(
+                    "Could not update performance chart failure message: %s",
+                    edit_exc,
+                )
+            return
+
+        try:
+            await progress.delete()
+        except Exception as exc:
+            logger.debug("Could not remove performance chart progress message: %s", exc)
 
     async def _show_history_callback(self, query, currency: str = "USD") -> None:
         entries = history_manager.get_history(30)
