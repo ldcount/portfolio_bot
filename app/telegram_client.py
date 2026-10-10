@@ -21,7 +21,6 @@ from app import history_manager
 from app import chart as chart_module
 from app import settings_manager
 from app import snapshot_database
-from app.platforms.cbr_fx_client import CBRFXClient
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,6 @@ class TelegramBot:
             Application.builder().token(self.token).post_init(self._post_init).build()
         )
         self.aggregator = Aggregator()
-        self.fx_client = CBRFXClient()
         self._aggregation_lock = asyncio.Lock()
         self._database_snapshot_lock = asyncio.Lock()
 
@@ -923,17 +921,7 @@ class TelegramBot:
                 logger.error("Daily database account scan failed: %s", exc)
                 summary = self._failed_database_summary(type(exc).__name__)
 
-            fx_rates = None
-            try:
-                fx_rates = await asyncio.to_thread(
-                    self.fx_client.get_rates,
-                    now.date(),
-                )
-            except Exception as exc:
-                logger.error(
-                    "Daily database exchange-rate scan failed (%s).",
-                    type(exc).__name__,
-                )
+            fx_rates = summary.get("fx_rates")
 
             snapshot = build_snapshot(summary, fx_rates, now)
             inserted = await asyncio.to_thread(

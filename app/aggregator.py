@@ -1,5 +1,7 @@
 import logging
 from html import escape
+from datetime import datetime
+from app.platforms.fx_client import FXClient
 from app.config import Config
 from app.platforms.bybit_client import BybitClient
 from app.platforms.okx_client import OkxClient
@@ -17,7 +19,7 @@ class Aggregator:
         self.kucoin = KucoinClient()
         self.tbank = TBankClient()
         self.ibkr = IBKRClient()
-        # FX and other platforms to be added later
+        self.fx_client = FXClient()
 
     def get_portfolio_summary(self):
         summary = {
@@ -33,6 +35,16 @@ class Aggregator:
             "errors": {},
             "is_complete": True,
         }
+
+        try:
+            summary["fx_rates"] = self.fx_client.get_rates(
+                datetime.now(Config.get_timezone_obj()).date()
+            )
+        except Exception as exc:
+            summary["fx_rates"] = None
+            summary["errors"]["fx"] = "Google Finance and Bank of Russia rates unavailable"
+            logger.error("FX aggregation failed (%s).", type(exc).__name__)
+        rate = (summary["fx_rates"] or {}).get("rub_per_usd")
 
         # ByBit
         if Config.BYBIT_API_KEY:
@@ -61,12 +73,14 @@ class Aggregator:
         # T-Bank
         if Config.TBANK_API_TOKEN:
             try:
-                tbank_data = self.tbank.get_portfolio_summary()
+                tbank_data = self.tbank.get_portfolio_summary(rub_per_usd=rate)
                 if "error" in tbank_data:
                     summary["errors"]["tbank"] = tbank_data["error"]
                 else:
                     summary["tbank_rub"] = tbank_data.get("total_rub", 0.0)
-                    summary["tbank_usd"] = tbank_data.get("total_usd", 0.0)
+                    summary["tbank_usd"] = (
+                        round(summary["tbank_rub"] / rate, 2) if rate else 0.0
+                    )
                     summary["tbank_main_rub"] = tbank_data.get("main_rub", 0.0)
                     summary["tbank_iis_rub"] = tbank_data.get("iis_rub", 0.0)
                     summary["tbank_accounts"] = tbank_data.get("accounts", [])
@@ -93,8 +107,6 @@ class Aggregator:
         return summary
 
     def format_message(self, summary):
-        from datetime import datetime
-
         current_date = datetime.now(Config.get_timezone_obj()).strftime("%d %b %Y")
         errors = summary.get("errors", {})
 
@@ -110,11 +122,6 @@ class Aggregator:
         tbank_rub_val = summary.get("tbank_rub", 0.0)
         tbank_usd_val = summary.get("tbank_usd", 0.0)
 
-        # We need an implied rate to calculate Total RUB for USD items
-        implied_rate = 90.0
-        if tbank_usd_val > 0:
-            implied_rate = tbank_rub_val / tbank_usd_val
-
         # Crypto
         bybit_usd = summary.get("bybit_usd", 0.0)
         okx_usd = summary.get("okx_usd", 0.0)
@@ -125,8 +132,7 @@ class Aggregator:
         ibkr_usd = summary.get("ibkr_usd", 0.0)
 
         # Totals
-        grand_total_usd = crypto_usd + tbank_usd_val + ibkr_usd
-        grand_total_rub = tbank_rub_val + ((crypto_usd + ibkr_usd) * implied_rate)
+        grand_total_usd, grand_total_rub = self.get_totals(summary)
 
         # Build Message
         lines = []
@@ -147,7 +153,10 @@ class Aggregator:
                     )
                 lines.append("Total T-BANK")
                 lines.append(f"RUB: <code>{fmt(tbank_rub_val, 'RUB')}</code>")
-                lines.append(f"USD: <code>{fmt(tbank_usd_val, 'USD')}</code>")
+                if "fx" in errors:
+                    lines.append("USD: <b>Unavailable ⚠️</b>")
+                else:
+                    lines.append(f"USD: <code>{fmt(tbank_usd_val, 'USD')}</code>")
             lines.append("")
 
         lines.append("<b>CRYPTO USD</b>")
@@ -182,8 +191,11 @@ class Aggregator:
 
         total_label = "PARTIAL TOTAL" if errors else "TOTAL"
         lines.append(f"<b>{total_label}</b>")
-        lines.append(f"USD: <code>{fmt(grand_total_usd, 'USD')}</code>")
-        if "tbank" in errors:
+        if grand_total_usd is None:
+            lines.append("USD: <b>Unavailable ⚠️</b>")
+        else:
+            lines.append(f"USD: <code>{fmt(grand_total_usd, 'USD')}</code>")
+        if "tbank" in errors or grand_total_rub is None:
             lines.append("RUB: <b>Unavailable ⚠️</b>")
         else:
             lines.append(f"RUB: <code>{fmt(grand_total_rub, 'RUB')}</code>")
@@ -195,6 +207,7 @@ class Aggregator:
                 "kucoin": "KuCoin",
                 "tbank": "T-Bank",
                 "ibkr": "IBKR",
+                "fx": "Currency conversion",
             }
             excluded = ", ".join(
                 display_names.get(key, key) for key in sorted(errors)
@@ -205,20 +218,18 @@ class Aggregator:
 
         return "\n".join(lines)
 
-    def get_totals(self, summary) -> tuple[float, float]:
+    def get_totals(self, summary) -> tuple[float | None, float | None]:
         """
         Return (grand_total_usd, grand_total_rub) from a summary dict.
         Uses the same logic as format_message so values are consistent.
         """
         tbank_rub_val = summary.get("tbank_rub", 0.0)
-        tbank_usd_val = summary.get("tbank_usd", 0.0)
         crypto_usd = summary.get("crypto_usd", 0.0)
         ibkr_usd = summary.get("ibkr_usd", 0.0)
 
-        implied_rate = 90.0
-        if tbank_usd_val > 0:
-            implied_rate = tbank_rub_val / tbank_usd_val
-
-        grand_total_usd = crypto_usd + tbank_usd_val + ibkr_usd
-        grand_total_rub = tbank_rub_val + ((crypto_usd + ibkr_usd) * implied_rate)
+        rate = (summary.get("fx_rates") or {}).get("rub_per_usd")
+        if rate is None:
+            return None, None
+        grand_total_usd = crypto_usd + tbank_rub_val / rate + ibkr_usd
+        grand_total_rub = tbank_rub_val + ((crypto_usd + ibkr_usd) * rate)
         return grand_total_usd, grand_total_rub

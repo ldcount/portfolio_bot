@@ -64,3 +64,7 @@
 
 ### `cbr_fx_client.py`
 - `CBRFXClient.get_rates(snapshot_date)`: Fetches official Bank of Russia RUB/USD and RUB/EUR daily rates and derives USD/EUR.
+
+### `fx_client.py`
+- `FXClient.get_rates(snapshot_date)`: Reads Google Finance USD/RUB and EUR/RUB quotes; falls back to the complete official CBR rate set on failure. Historical requests use CBR. Returns the source and rates, deriving USD/EUR consistently.
+- `TBankClient.get_portfolio_summary(rub_per_usd=None)`: Uses the shared scan rate for conversions; retains native RUB balances when FX is unavailable.

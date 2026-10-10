@@ -234,9 +234,8 @@ class TBankGroupingTests(unittest.TestCase):
         sdk.operations.get_portfolio.side_effect = portfolio
         with (
             patch.object(Config, "TBANK_API_TOKEN", "token"),
-            patch.object(TBankClient, "_get_usd_rub_rate", return_value=80.0),
         ):
-            result = TBankClient().get_portfolio_summary()
+            result = TBankClient().get_portfolio_summary(rub_per_usd=80.0)
 
         self.assertEqual(result["main_rub"], 1000.0)
         self.assertEqual(result["iis_rub"], 2000.0)
@@ -314,8 +313,7 @@ class DatabaseSnapshotJobTests(unittest.IsolatedAsyncioTestCase):
             "ibkr_usd": 0.0,
             "errors": {"ibkr": "offline"},
         }
-        bot.fx_client = Mock()
-        bot.fx_client.get_rates.return_value = {
+        bot.aggregator.get_portfolio_summary.return_value["fx_rates"] = {
             "rub_per_usd": 80.0,
             "rub_per_eur": 90.0,
             "usd_per_eur": 1.125,
@@ -352,7 +350,6 @@ class DatabaseSnapshotJobTests(unittest.IsolatedAsyncioTestCase):
         bot = TelegramBot.__new__(TelegramBot)
         bot._database_snapshot_lock = asyncio.Lock()
         bot.aggregator = Mock()
-        bot.fx_client = Mock()
 
         with patch.object(
             snapshot_database,
@@ -362,7 +359,6 @@ class DatabaseSnapshotJobTests(unittest.IsolatedAsyncioTestCase):
             await bot.database_snapshot_job(Mock())
 
         bot.aggregator.get_portfolio_summary.assert_not_called()
-        bot.fx_client.get_rates.assert_not_called()
 
 
 class ExportCommandTests(unittest.IsolatedAsyncioTestCase):

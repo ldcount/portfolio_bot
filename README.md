@@ -64,12 +64,31 @@ After each scheduled snapshot the bot writes today's portfolio totals to `data/p
 Automatic-report choices made through `/settings` are stored in
 `data/bot_settings.json` and survive bot restarts. The runtime settings file is ignored by Git.
 
+### Exchange rates
+
+Every portfolio scan reads USD/RUB and EUR/RUB from the public Google Finance
+currency quote pages, the source behind Sheets' `GOOGLEFINANCE` function. Google
+quotes can be delayed, so a Sheet and the bot may differ if refreshed at different
+times. No Google account, spreadsheet, or API key is required.
+
+If either Google quote is unavailable or invalid, the entire rate set falls back
+to the official Bank of Russia daily rates. Historical dates use CBR directly.
+USD/EUR is derived from the two RUB rates to keep conversions consistent.
+Reports, performance history, allocation charts, and daily exports reuse the
+same rates from each scan. RUB to USD divides by RUB per USD; USD to RUB multiplies.
+The previous T-Bank last-price lookup and fixed 90 RUB/USD fallback are removed.
+If both providers fail, balances remain available, converted totals are unavailable,
+and performance history is not saved. Database rates and totals remain blank.
+
+The Google reader depends on public HTML, which can change or return a consent
+page; such responses trigger the CBR fallback.
+
 ### Daily SQLite snapshots
 
 Independently of automatic Telegram reports, the bot silently records one row per day at
 `DATABASE_SNAPSHOT_HOUR` (default `17:00`) in the configured timezone. The database is
 `data/portfolio_snapshots.sqlite3` and contains the T‑Bank Main and IIS balances, combined
-crypto, IBKR, official Bank of Russia USD/EUR rates, and portfolio totals in RUB, USD, and EUR.
+crypto, IBKR, exchange rates, and portfolio totals in RUB, USD, and EUR.
 
 If the bot starts after the configured hour and the current date has no row, it takes one
 same-day catch-up snapshot. Failed sources are stored as blank values; totals remain blank

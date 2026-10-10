@@ -142,9 +142,8 @@ class TBankClientTests(unittest.TestCase):
             patch.object(
                 Config, "TBANK_API_TARGET", "invest-public-api.tbank.ru"
             ),
-            patch.object(TBankClient, "_get_usd_rub_rate", return_value=90.0),
         ):
-            result = TBankClient().get_portfolio_summary()
+            result = TBankClient().get_portfolio_summary(rub_per_usd=90.0)
 
         client_class.assert_called_once_with(
             "token", target="invest-public-api.tbank.ru"
@@ -193,6 +192,8 @@ class CompletenessTests(unittest.TestCase):
         aggregator.okx = Mock()
         aggregator.tbank = Mock()
         aggregator.ibkr = Mock()
+        aggregator.fx_client = Mock()
+        aggregator.fx_client.get_rates.return_value = {"rub_per_usd": 80.0}
 
         with (
             patch.object(Config, "BYBIT_API_KEY", None),
@@ -561,7 +562,6 @@ class AsyncAggregationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(Config, "TELEGRAM_CHAT_ID", "12345"),
             patch("app.telegram_client.Application.builder", return_value=builder),
             patch("app.telegram_client.Aggregator"),
-            patch("app.telegram_client.CBRFXClient"),
             patch("app.telegram_client.snapshot_database.initialize_database"),
             patch.object(
                 settings_manager,
